@@ -1,0 +1,37 @@
+# __TODO:__
+- SETTINGS: STATIC and MEDIA configurations
+- Add React front end
+- Add docker-compose with django + postgresql
+- **Django backend doesnt verify JWT tokens are correctly signed!!!!**
+- https://codeburst.io/localstorage-vs-cookies-all-you-need-to-know-about-storing-jwt-tokens-securely-in-the-front-end-70dc0a9b3ad3
+- Rotate refresh_token and **1 one active per user**. F.e: A refresh token will be active during 90 days, if the user enter in the page 89 days enter we will rotate the refresh tokens each ¿30 minutes?. But if the user enter the page 91 days later the refresh token will have expired and he will need to log in. 
+
+NOTE: All of the app_news and app_base functionallity are taken from TrescaDev project
+(for example, Querytokens)
+
+
+
+
+
+
+
+## Cómo usar django oauth
+
+```
+AUTH APP:
+client_id = "xbm4Wv3db64dTvrXSFrLkBS88eErzp1l7aYXTMT3"
+client_secret = "Lz3CzmzGYdcQPiptyfwi0PoPu6DLB2CebNvmOiEHcRAS0WkwWzrEFWGmLoClsdndol1xt92aMVXZdFH73gQRwvAxonU3LhaOtPNGoxSZykD019ORJRZhqIF1zIOTb0e9"
+
+
+
+curl -X POST -d "client_id=xbm4Wv3db64dTvrXSFrLkBS88eErzp1l7aYXTMT3&client_secret=Lz3CzmzGYdcQPiptyfwi0PoPu6DLB2CebNvmOiEHcRAS0WkwWzrEFWGmLoClsdndol1xt92aMVXZdFH73gQRwvAxonU3LhaOtPNGoxSZykD019ORJRZhqIF1zIOTb0e9&grant_type=password&username=admin&password=admin" http://localhost:8000/auth/token
+
+```
+
+
+
+## Google
+```bash
+curl -X POST -d "grant_type=convert_token&client_id=wBXn5H9WlemXJ4GJWbiU9kKv88w47cwBxvuPMdgl&client_secret=DizHvHLNZtsVQFt35QiECyU37CGasW53rVicwToGZVavyHh8NOnqnlwTW4gSFulkQsiu22Bwp8y7pRqgWpcMBcmjmDnTb88qruSqm0g1QiLM7qaKZjcV8lOsoyTvCY8y&backend=google-oauth2&token=ya29.a0Ael9sCObctjikb2oMw2M0lxvW4Ri1LmjtmJVBIU6lqoBZ9iCC8N-GBpUo10D3krF2PCY8pneftMuLRUkWN-Pb_Mmjjy-5jsoDasAZR5qCZu3ZwM8-1lveaGQnMI08QNk1mwlI5naXvL38vcybqXKwooglkWqaCgYKATsSARASFQF4udJhnJFd5C0bI-JwKyiwrmmF0w0163" http://localhost:8000/auth/convert-token
+```
+

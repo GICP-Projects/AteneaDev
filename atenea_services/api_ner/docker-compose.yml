@@ -1,0 +1,24 @@
+version: "3.3"
+
+services:
+  ner-api:
+    #container_name: api-ner # Custom name doesn't work with --scale
+    image: "atenea-services:ner"
+    build: ./api_ner
+    restart: unless-stopped
+    #ports: # Custom external port doesn't work with --scale
+    #  - 23540:8000
+    environment:
+      NER_SERVICE_API_KEY: ${NER_SERVICE_API_KEY}
+      MAX_DATA_BY_REQUEST: ${NER_SERVICE_MAX_DATA_BY_REQUEST}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.api_ner.rule=PathPrefix(`${NER_ROOT_PATH}`)
+      - traefik.http.routers.api_ner.entrypoints=web
+      - traefik.http.services.api_ner.loadbalancer.server.port=8000
+      - traefik.http.routers.api_ner.middlewares=ner-stripprefix
+      - traefik.http.middlewares.ner-stripprefix.stripprefix.prefixes=${NER_ROOT_PATH}
+    networks:
+      atenea_services_net:
+        aliases:
+          - api-ner

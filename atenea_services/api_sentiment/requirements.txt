@@ -1,0 +1,5 @@
+uvicorn==0.17.6
+fastapi==0.75.1
+torch==2.5.1 
+transformers==4.48.0
+#flash-attn==2.7.3 #TODO IT DOESN'T WORK `ModuleNotFoundError: No module named 'torch'`

@@ -1,0 +1,22 @@
+services:
+  traefik:
+    image: "traefik:v3.6"  
+    container_name: "atenea-services"
+    command:
+      - --ping=true
+      - --api.insecure=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+    ports:
+      - "25480:80"    
+      - "25488:8080"  
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    networks:
+      - atenea_services_net
+
+networks:
+  atenea_services_net:
+    name: atenea_services_net 
+    driver: bridge

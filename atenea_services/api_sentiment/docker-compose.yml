@@ -1,0 +1,78 @@
+version: "3.3"
+
+services:
+  sentiment-api-gpu1:
+    image: "atenea-services:sentiment"
+    build: ./api_sentiment
+    restart: unless-stopped
+    volumes:
+      - ${SENTIMENT_MODEL_PATH}:/root/.cache/huggingface
+    #ports: # Custom external port doesn't work with --scale
+    #  - 23540:8000
+    environment:
+      UVICORN_WORKERS: ${SENTIMENT_UVICORN_WORKERS}
+      API_KEY: ${SENTIMENT_SERVICE_API_KEY}
+      MODEL_NAME: ${SENTIMENT_SERVICE_MODEL_NAME}
+      MODEL_MAX_TOKENS: ${SENTIMENT_SERVICE_MODEL_MAX_TOKENS}
+      MAX_DATA_BY_REQUEST: ${SENTIMENT_SERVICE_MAX_DATA_BY_REQUEST}
+      TRUST_REMOTE_CODE: ${SENTIMENT_TRUST_REMOTE_CODE}
+      DEVICE: "cuda:0"
+      ROOT_PATH: ${SENTIMENT_ROOT_PATH}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.api_sentiment.rule=PathPrefix(`${SENTIMENT_ROOT_PATH}`)
+      - traefik.http.routers.api_sentiment.entrypoints=web
+      #- traefik.http.routers.api_sentiment.service=api-sentiment@docker
+      - traefik.http.services.api_sentiment.loadbalancer.server.port=8000
+      - traefik.http.routers.api_sentiment.middlewares=sentiment-stripprefix
+      - traefik.http.middlewares.sentiment-stripprefix.stripprefix.prefixes=${SENTIMENT_ROOT_PATH}
+    networks:
+      atenea_services_net:
+        aliases:
+          - api-sentiment
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 2
+              capabilities:
+                - gpu
+
+  sentiment-api-gpu2:
+    image: "atenea-services:sentiment"
+    build: ./api_sentiment
+    restart: unless-stopped
+    volumes:
+      - ${SENTIMENT_MODEL_PATH}:/root/.cache/huggingface
+    #ports: # Custom external port doesn't work with --scale
+    #  - 23540:8000
+    environment:
+      UVICORN_WORKERS: ${SENTIMENT_UVICORN_WORKERS}
+      API_KEY: ${SENTIMENT_SERVICE_API_KEY}
+      MODEL_NAME: ${SENTIMENT_SERVICE_MODEL_NAME}
+      MODEL_MAX_TOKENS: ${SENTIMENT_SERVICE_MODEL_MAX_TOKENS}
+      MAX_DATA_BY_REQUEST: ${SENTIMENT_SERVICE_MAX_DATA_BY_REQUEST}
+      TRUST_REMOTE_CODE: ${SENTIMENT_TRUST_REMOTE_CODE}
+      DEVICE: "cuda:1"
+      ROOT_PATH: ${SENTIMENT_ROOT_PATH}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.api_sentiment.rule=PathPrefix(`${SENTIMENT_ROOT_PATH}`)
+      - traefik.http.routers.api_sentiment.entrypoints=web
+      #- traefik.http.routers.api_sentiment.service=api-sentiment@docker
+      - traefik.http.services.api_sentiment.loadbalancer.server.port=8000
+      - traefik.http.routers.api_sentiment.middlewares=sentiment-stripprefix
+      - traefik.http.middlewares.sentiment-stripprefix.stripprefix.prefixes=${SENTIMENT_ROOT_PATH}
+    networks:
+      atenea_services_net:
+        aliases:
+          - api-sentiment
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 2
+              capabilities:
+                - gpu

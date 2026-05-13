@@ -1,0 +1,11 @@
+# Custom atenea_api folders/files created by old deployments
+./_data
+./_prod_data
+./redis
+**/migrations/*.py
+venv
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class

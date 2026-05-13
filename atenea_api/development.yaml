@@ -1,0 +1,65 @@
+version: "3.3"
+
+services:
+  atenea-postgres:
+    container_name: dev-postgres-atenea
+    image: postgres
+    shm_size: '2gb'
+    volumes:
+      - ./_data/postgres:/data/postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PGDATA: /data/postgres
+    ports:
+      # <Port exposed> : < PostgreSQL Port running inside container>
+      - "25451:5432"
+    expose:
+      - "25451"
+    networks:
+      - atenea-db
+
+  atenea-pgadmin:
+    container_name: dev-pgadmin-atenea
+    image: dpage/pgadmin4
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@gicp.es}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
+    volumes:
+      - _pgadmin:/root/.pgadmin
+    ports:
+      - "${PGADMIN_PORT:-25060}:80"
+    networks:
+      - atenea-db
+    restart: unless-stopped
+
+  redis:
+    image: "redis:alpine"
+    container_name: dev-redis-atenea
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    ports:
+      - "26000:6379"
+    volumes:
+      - ./redis/data:/var/lib/redis
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    environment:
+      - REDIS_REPLICATION_MODE=master
+    networks:
+      node_net:
+        aliases: 
+          - dev-redis
+
+networks:
+  atenea-db:
+    driver: bridge
+  node_net:
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.9.0/24 # 172.16.9.X/24 for Atenea main project
+
+volumes:
+  _data: 
+  _pgadmin: 

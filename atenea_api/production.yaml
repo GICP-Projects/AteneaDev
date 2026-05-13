@@ -1,0 +1,134 @@
+services:
+  atenea-postgres:
+    container_name: prod-postgres-atenea
+    image: postgres
+    shm_size: '2gb'
+    volumes:
+      - ./_prod_data/postgres:/data/postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PGDATA: /data/postgres
+    networks:
+      - atenea-network
+
+  atenea-pgadmin:
+    container_name: prod-pgadmin-atenea
+    image: dpage/pgadmin4
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@admin.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
+    volumes:
+      - _pgadmin:/root/.pgadmin
+    ports:
+      - "25060:80" # Expose only necessary port
+    networks:
+      - atenea-network
+    restart: unless-stopped
+
+  atenea-backend:
+    image: gicp/atenea-server:14.04.26
+    container_name: prod-backend-atenea
+    build:
+      context: .
+    command: sh -c "python3 manage.py makemigrations app_* &&
+                    python3 manage.py migrate &&
+                    gunicorn atenea_api.wsgi:application --worker-class gevent --workers 10 --timeout 300 --log-level debug --bind 0.0.0.0:8000"
+    ports:
+      - "28111:8000" # Expose only necessary port
+    networks:
+      - atenea-network
+      - atenea_services_net
+    env_file:
+      - ../.env.prod
+    depends_on:
+      - atenea-postgres
+
+  atenea-redis:
+    image: "redis:alpine"
+    container_name: prod-redis-atenea
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - ./redis/data:/var/lib/redis
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    environment:
+      - REDIS_REPLICATION_MODE=master
+    depends_on:
+      - atenea-backend
+    networks:
+      - atenea-network
+
+  atenea-queue-default:
+    image: gicp/atenea-server:14.04.26
+    container_name: prod-default-queue-atenea
+    command: ["bash", "-c", "celery -A atenea_api worker -Q default -n AT1@%h -l INFO --concurrency=10"]
+    depends_on:
+      - atenea-redis
+      - atenea-backend
+    networks:
+      - atenea-network
+      - atenea_services_net
+    env_file:
+      - ../.env.prod
+
+  atenea-queue-index:
+    image: gicp/atenea-server:14.04.26
+    container_name: prod-index-queue-atenea
+    command: ["bash", "-c", "celery -A atenea_api worker -Q index-q -n AT2@%h -l INFO --concurrency=1"]
+    depends_on:
+      - atenea-redis
+      - atenea-backend
+    networks:
+      - atenea-network
+    env_file:
+      - ../.env.prod
+
+  atenea-queue-ner:
+    image: gicp/atenea-server:14.04.26
+    container_name: prod-ner-queue-atenea
+    command: ["bash", "-c", "celery -A atenea_api worker -Q ner-q -n AT3@%h -l INFO --concurrency=2"]
+    depends_on:
+      - atenea-redis
+      - atenea-backend
+    networks:
+      - atenea-network
+      - atenea_services_net
+    env_file:
+      - ../.env.prod
+
+  atenea-queue-embed:
+    image: gicp/atenea-server:14.04.26
+    container_name: prod-embed-queue-atenea
+    command: ["bash", "-c", "celery -A atenea_api worker -Q embed-q -n AT4@%h -l INFO --concurrency=1"]
+    depends_on:
+      - atenea-redis
+      - atenea-backend
+    networks:
+      - atenea-network
+      - atenea_services_net
+    env_file:
+      - ../.env.prod
+
+  atenea-beat:
+    image: gicp/atenea-server:14.04.26
+    container_name: prod-beat
+    command: ["bash", "-c", "celery -A atenea_api beat -l INFO"]
+    depends_on:
+      - atenea-redis
+      - atenea-backend
+    networks:
+      - atenea-network
+    env_file:
+      - ../.env.prod
+
+networks:
+  atenea-network:
+    driver: bridge
+  atenea_services_net:
+    external: true
+    name: atenea_services_net
+
+volumes:
+  _pgadmin:
