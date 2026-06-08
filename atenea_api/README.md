@@ -12,6 +12,7 @@ Main responsibilities:
 - Integration with an OpenAI-compatible embeddings provider.
 
 ## Index
+- [REST API usage](./docs/api_usage.md)
 - [Environment file explanation](./docs/enviroments.md)
 - [Required external models](./models/README.md)
 - [Dev deployment](./docs/dev_deployment.md)

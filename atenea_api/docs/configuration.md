@@ -38,4 +38,4 @@ header:
 2.- Django oauth toolkit app > Application
 3.- Create a new application (https://github.com/wagnerdelima/drf-social-oauth2). Save the client_id and client_secret
 4.- Go to the Google OAuth panel (https://console.developers.google.com/apis/credentials) and create a new project (or use an existing one)
-5.- Create there a new "Oauth Client ID". Once it's created, Google will show you a Client ID and a Client Secret. Insert these credentials in the environment variables (GOOGLE_OAUTH2_KEY, GOOGLE_OAUTH2_SECRET) 
+5.- Create there a new "Oauth Client ID". Once it's created, Google will show you a Client ID and a Client Secret. Insert these credentials in the environment variables (GOOGLE_OAUTH2_KEY, GOOGLE_OAUTH2_SECRET)
