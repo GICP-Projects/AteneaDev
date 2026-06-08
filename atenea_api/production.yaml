@@ -29,7 +29,7 @@ services:
     restart: unless-stopped
 
   atenea-backend:
-    image: gicp/atenea-server:14.04.26
+    image: gicp/atenea-server:08.06.26
     container_name: prod-backend-atenea
     build:
       context: .
@@ -60,8 +60,21 @@ services:
     networks:
       - atenea-network
 
+  atenea-minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: prod-minio-atenea
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MEDIA_S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MEDIA_S3_SECRET_KEY:-minioadmin}
+    volumes:
+      - ./_prod_data/minio:/data
+    networks:
+      - atenea-network
+    restart: unless-stopped
+
   atenea-queue-default:
-    image: gicp/atenea-server:14.04.26
+    image: gicp/atenea-server:08.06.26
     container_name: prod-default-queue-atenea
     command: ["bash", "-c", "celery -A atenea_api worker -Q default -n AT1@%h -l INFO --concurrency=10"]
     depends_on:
@@ -74,7 +87,7 @@ services:
       - ../.env.prod
 
   atenea-queue-index:
-    image: gicp/atenea-server:14.04.26
+    image: gicp/atenea-server:08.06.26
     container_name: prod-index-queue-atenea
     command: ["bash", "-c", "celery -A atenea_api worker -Q index-q -n AT2@%h -l INFO --concurrency=1"]
     depends_on:
@@ -86,7 +99,7 @@ services:
       - ../.env.prod
 
   atenea-queue-ner:
-    image: gicp/atenea-server:14.04.26
+    image: gicp/atenea-server:08.06.26
     container_name: prod-ner-queue-atenea
     command: ["bash", "-c", "celery -A atenea_api worker -Q ner-q -n AT3@%h -l INFO --concurrency=2"]
     depends_on:
@@ -99,7 +112,7 @@ services:
       - ../.env.prod
 
   atenea-queue-embed:
-    image: gicp/atenea-server:14.04.26
+    image: gicp/atenea-server:08.06.26
     container_name: prod-embed-queue-atenea
     command: ["bash", "-c", "celery -A atenea_api worker -Q embed-q -n AT4@%h -l INFO --concurrency=1"]
     depends_on:
@@ -112,7 +125,7 @@ services:
       - ../.env.prod
 
   atenea-beat:
-    image: gicp/atenea-server:14.04.26
+    image: gicp/atenea-server:08.06.26
     container_name: prod-beat
     command: ["bash", "-c", "celery -A atenea_api beat -l INFO"]
     depends_on:
