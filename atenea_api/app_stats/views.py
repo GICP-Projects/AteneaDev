@@ -10,6 +10,12 @@ import logging
 # Get an instance of a logger
 logger = logging.getLogger(__name__)
 
+def _normalize_tag_params(params):
+    # Rename public query param tag = [..] to internal service arg tags = [...]
+    if "tag" in params:
+        params["tags"] = params.pop("tag")
+    return params
+
 class MessageStatsViewSet(viewsets.ViewSet):
     """
     API ViewSet for message statistics.
@@ -47,6 +53,7 @@ class MessageStatsViewSet(viewsets.ViewSet):
                 request,
                 StatsMsgSerializer,
             )
+            params = _normalize_tag_params(params)
             stats_qs = get_message_stats(**params)
             
             return create_paginate_response(
@@ -71,5 +78,4 @@ class MessageStatsViewSet(viewsets.ViewSet):
                 f"{ e.__class__.__name__ }: {e}",
             )
             return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 

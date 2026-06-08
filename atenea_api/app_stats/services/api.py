@@ -3,6 +3,7 @@ from django.db.models import Count
 import numpy as np
 from app_telegram.models import MessageItem
 from app_telegram.services.api import _filter_messages
+from app_telegram.serializers import ANY as TAG_ANY
 
 def get_message_stats(
     createdat_min=None, 
@@ -11,6 +12,8 @@ def get_message_stats(
     room=None, 
     is_reply=None, 
     stored_since=None,
+    tags=None,
+    tag_match=TAG_ANY,
     z_score=False
 ):
     """
@@ -30,6 +33,10 @@ def get_message_stats(
         Filter messages that are replies.
     stored_since: datetime.date, optional
         Interval start date for the `stored_date` field.
+    tags: List[str], optional
+        List of room tags to filter by.
+    tag_match: str, default="any"
+        Determines if rooms should match all given tags or any of them.
     z_score: bool, optional
         If True, calculates the Z-Score for each group instead of the frequency.
 
@@ -48,7 +55,9 @@ def get_message_stats(
         createdat_max=createdat_max, 
         room=room, 
         is_reply=is_reply, 
-        stored_since=stored_since
+        stored_since=stored_since,
+        tags=tags,
+        tag_match=tag_match,
     )
 
     # Group by the specified period and count messages
