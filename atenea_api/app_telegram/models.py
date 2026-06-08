@@ -471,3 +471,116 @@ class MessageItem(BaseModel):
         indexes = [
             models.Index(fields=['created_at', 'id']),
         ]
+
+
+# ==================================================================
+# 4.0 - Telegram Downloaded Media Item
+# ==================================================================
+class TelegramMediaItem(BaseModel):
+    """Metadata for a Telegram message media file stored in S3-compatible storage."""
+
+    PENDING = "pending"
+    DOWNLOADED = "downloaded"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+    DELETED = "deleted"
+    STATUS_CHOICES = [
+        (PENDING, "Pending"),
+        (DOWNLOADED, "Downloaded"),
+        (SKIPPED, "Skipped"),
+        (FAILED, "Failed"),
+        (DELETED, "Deleted"),
+    ]
+
+    RISK_LOW = "low"
+    RISK_MEDIUM = "medium"
+    RISK_HIGH = "high"
+    RISK_UNKNOWN = "unknown"
+    RISK_CHOICES = [
+        (RISK_LOW, "Low"),
+        (RISK_MEDIUM, "Medium"),
+        (RISK_HIGH, "High"),
+        (RISK_UNKNOWN, "Unknown"),
+    ]
+
+    message = models.OneToOneField(
+        MessageItem,
+        on_delete=models.CASCADE,
+        related_name="downloaded_media",
+    )
+    room = models.ForeignKey(
+        RoomItem,
+        on_delete=models.CASCADE,
+        related_name="downloaded_media",
+    )
+
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=PENDING)
+    reason = models.CharField(max_length=128, blank=True, default="")
+
+    bucket = models.CharField(max_length=255, blank=True, default="")
+    object_key = models.CharField(max_length=1024, blank=True, default="")
+    original_file_name = models.CharField(max_length=512, blank=True, default="")
+    extension = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    mime_type = models.CharField(max_length=255, blank=True, default="")
+    size_bytes = models.PositiveBigIntegerField(null=True, default=None)
+    sha256 = models.CharField(max_length=64, blank=True, default="", db_index=True)
+
+    risk_level = models.CharField(max_length=16, choices=RISK_CHOICES, default=RISK_LOW)
+    risk_reason = models.CharField(max_length=128, blank=True, default="")
+    is_potentially_dangerous = models.BooleanField(default=False)
+
+    downloaded_at = models.DateTimeField(null=True, default=None)
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["room", "status"]),
+            models.Index(fields=["downloaded_at", "id"]),
+        ]
+
+
+# ==================================================================
+# 5.0 - Telegram External URL Item
+# ==================================================================
+class TelegramExternalUrlItem(BaseModel):
+    """Download-like external URL detected in an already stored Telegram message."""
+
+    NOT_DOWNLOADED = "not_downloaded"
+    DELETED = "deleted"
+    STATUS_CHOICES = [
+        (NOT_DOWNLOADED, "Not downloaded"),
+        (DELETED, "Deleted"),
+    ]
+
+    message = models.ForeignKey(
+        MessageItem,
+        on_delete=models.CASCADE,
+        related_name="external_urls",
+    )
+    room = models.ForeignKey(
+        RoomItem,
+        on_delete=models.CASCADE,
+        related_name="external_urls",
+    )
+
+    url = models.URLField(max_length=2048)
+    domain = models.CharField(max_length=255, db_index=True)
+    provider = models.CharField(max_length=64, db_index=True)
+    status = models.CharField(max_length=32, choices=STATUS_CHOICES, default=NOT_DOWNLOADED)
+
+    detected_at = models.DateTimeField(default=timezone.now, editable=False)
+    last_seen_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["message", "url"],
+                name="unique_external_url_by_message",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["room", "provider"]),
+            models.Index(fields=["room", "status"]),
+            models.Index(fields=["last_seen_at", "id"]),
+        ]

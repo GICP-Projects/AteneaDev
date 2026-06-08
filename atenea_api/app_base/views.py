@@ -126,8 +126,9 @@ def get_and_log_request_data(
     token: uuid.UUID
         Return the token of the Query that logs the request. False if to_log_query=False.
     """
-    # Handle GET requests with query params
-    if request.method == 'GET':
+    # Handle read-like requests with query params.
+    # DELETE endpoints in this API also use URL filters to select affected items.
+    if request.method in {"GET", "DELETE"}:
         # Get all query params and handle list-type values
         data = {}
         for key, value in request.query_params.lists():
@@ -135,11 +136,11 @@ def get_and_log_request_data(
             # assign the single value (taking the first one)
             data[key] = value if (len(value) > 1 or key in list_params) else value[0]
 
-        # Allow GET params to use hyphens
+        # Allow query params to use hyphens
         # Replace Javascript-style params (with hyphens) into Python-style (snake_case)
         data = {k.replace("-", "_"): v for k, v in data.items()}
     else:
-        # For non-GET methods, get the data (POST, PUT, PATCH)
+        # For body-based methods, get the data (POST, PUT, PATCH)
         data = request.data
 
     # Log this request (in a Query item)

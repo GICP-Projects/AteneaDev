@@ -1,5 +1,6 @@
 from celery.app import shared_task
 from app_telegram.models import MessageItem
+from app_telegram.serializers import ANY as TAG_ANY
 from app_entity.services.ner import run_ner
 
 
@@ -19,6 +20,8 @@ from app_entity.services.ner import run_ner
 @shared_task(track_started=True)
 def ner_extraction_msgs_pipeline(
     room = [], 
+    tags = [],
+    tag_match = TAG_ANY,
     is_reply = None,
     createdat_min = None,
     createdat_max = None,
@@ -40,6 +43,12 @@ def ner_extraction_msgs_pipeline(
     room: List[str], default=[]
         List of channel/group names from which messages are to be extracted. By 
         default, the list will be empty and this filter will be ignored.
+
+    tags: List[str], default=[]
+        To filter the channels/groups according to this list of tags.
+
+    tag_match: str, default="any"
+        Determines if items should match all given tags ('all') or any of them ('any').
 
     is_reply: bool, default=None
         Filter messages that are replies to another message.
@@ -86,7 +95,8 @@ def ner_extraction_msgs_pipeline(
         "annotated_text",
         and_filter_fields=and_filter_fields,
         list_filter_fields = {
-            "room__unique_name__iexact": {"values": [r.strip() for r in room], "OR": True}
+            "room__unique_name__iexact": {"values": [r.strip() for r in room], "OR": True},
+            "room__tags__icontains": {"values": tags, "OR": tag_match == TAG_ANY},
         },
         apply_distinct = False, # With the current filters there is no risk of duplicates.
         block_size=block_size

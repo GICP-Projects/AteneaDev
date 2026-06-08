@@ -10,11 +10,19 @@ The development environment runs these containers:
 - PostgreSQL server. Relational DB where the data is stored.
 - pgAdmin. PostgreSQL administration UI.
 - Redis server. Broker and result backend for Celery queues.
+- MinIO server. S3-compatible object storage used for downloaded Telegram media.
 
 In order to run the Redis and Postgresql containers execute the following command inside the atenea_api directory (to use the global .env.dev, available in a different directory, is necessary to specify it by using **--env-file**):
 ```bash
 docker-compose -f development.yaml --env-file ../.env.dev -p atenea-dev up -d
 ```
+
+The bundled MinIO service exposes:
+- S3 API: `http://localhost:29000`
+- Web console: `http://localhost:29001`
+
+Use the same values from `.env.dev` for the MinIO console credentials:
+`MEDIA_S3_ACCESS_KEY` and `MEDIA_S3_SECRET_KEY`.
 
 ## Backend deployment
 
@@ -41,6 +49,45 @@ Create a development environment (**.env.dev**) by copying the .env.example (rem
 cp .env.example .env.dev
 vim .env.dev
 ```
+
+For local media downloads, configure the S3-compatible storage section. If the
+Django development server and Celery workers run on the host, use:
+```env
+MEDIA_S3_ENDPOINT_URL=http://localhost:29000
+MEDIA_S3_PUBLIC_ENDPOINT_URL=http://localhost:29000
+MEDIA_S3_REGION=us-east-1
+MEDIA_S3_BUCKET=atenea-telegram-media
+MEDIA_S3_ACCESS_KEY=<random-access-key>
+MEDIA_S3_SECRET_KEY=<random-secret-key>
+MEDIA_S3_ADDRESSING_STYLE=path
+MEDIA_S3_USE_SSL=false
+MEDIA_S3_VERIFY_SSL=false
+MEDIA_S3_PRESIGNED_TTL_SECONDS=900
+MEDIA_S3_MAX_FILE_SIZE_BYTES=52428800
+MEDIA_S3_CREATE_BUCKET=true
+MEDIA_DOWNLOAD_PROGRESS_TTL_SECONDS=86400
+MEDIA_EXTERNAL_URL_WHITELIST_EXTRA=
+```
+
+If Django/Celery also run inside Docker on the same compose network, use the
+service name for the internal upload endpoint:
+```env
+MEDIA_S3_ENDPOINT_URL=http://atenea-minio:9000
+MEDIA_S3_PUBLIC_ENDPOINT_URL=http://localhost:29000
+```
+
+Local HTTP is the recommended development default. For HTTPS development with a
+self-signed certificate, mount MinIO certificates into
+`/root/.minio/certs` and set:
+```env
+MEDIA_S3_ENDPOINT_URL=https://localhost:29000
+MEDIA_S3_PUBLIC_ENDPOINT_URL=https://localhost:29000
+MEDIA_S3_USE_SSL=true
+MEDIA_S3_VERIFY_SSL=false
+```
+
+Use `MEDIA_S3_VERIFY_SSL=true` only if the certificate is trusted by the host or
+container running Django/Celery.
 
 Run `download.sh` script to add to the project all the required add-ons
 ```bash

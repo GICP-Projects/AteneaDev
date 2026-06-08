@@ -51,6 +51,23 @@ services:
         aliases: 
           - dev-redis
 
+  atenea-minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: dev-minio-atenea
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MEDIA_S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MEDIA_S3_SECRET_KEY:-minioadmin}
+    ports:
+      - "29000:9000"
+      - "29001:9001"
+    volumes:
+      - ./_data/minio:/data
+    networks:
+      - atenea-db
+      - node_net
+    restart: unless-stopped
+
 networks:
   atenea-db:
     driver: bridge

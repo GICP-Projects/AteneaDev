@@ -19,6 +19,7 @@ python-dateutil==2.8.2
 python-dotenv==1.0.0
 redis==4.6.0
 telethon==1.36.0
+boto3==1.43.11
 elasticsearch==8.13.1
 elasticsearch-dsl==8.13.1
 django-elasticsearch-dsl==8.0

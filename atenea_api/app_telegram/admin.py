@@ -2,7 +2,15 @@ from django import forms
 from django.contrib import admin
 from django.utils.translation import gettext_lazy as _
 from phonenumber_field.formfields import PhoneNumberField, SplitPhoneNumberField
-from .models import SeedItem, TelegramAuth, RoomItem, UserItem, MessageItem
+from .models import (
+    MessageItem,
+    RoomItem,
+    SeedItem,
+    TelegramAuth,
+    TelegramExternalUrlItem,
+    TelegramMediaItem,
+    UserItem,
+)
 
 
 # ======================================================
@@ -137,3 +145,23 @@ class MessageItemAdmin(admin.ModelAdmin):
         return len(obj.text)
 
 admin.site.register(MessageItem, MessageItemAdmin)
+
+
+class TelegramMediaItemAdmin(admin.ModelAdmin):
+    list_display = ["id", "room", "message", "status", "extension", "risk_level", "downloaded_at"]
+    readonly_fields = ["message", "room", "bucket", "object_key", "sha256", "downloaded_at"]
+    search_fields = ["original_file_name", "sha256", "message__link", "room__unique_name"]
+    list_filter = ["status", "risk_level", "extension"]
+
+
+admin.site.register(TelegramMediaItem, TelegramMediaItemAdmin)
+
+
+class TelegramExternalUrlItemAdmin(admin.ModelAdmin):
+    list_display = ["id", "room", "message", "provider", "domain", "status", "last_seen_at"]
+    readonly_fields = ["message", "room", "url", "domain", "provider", "detected_at", "last_seen_at"]
+    search_fields = ["url", "domain", "provider", "message__link", "room__unique_name"]
+    list_filter = ["provider", "status", "domain"]
+
+
+admin.site.register(TelegramExternalUrlItem, TelegramExternalUrlItemAdmin)

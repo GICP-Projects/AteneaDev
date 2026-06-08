@@ -35,6 +35,80 @@ Default: none.
 
 Redis password to be used by the docker. This variable will be used by the docker-compose container `redis` and by the API server to enable communication between the two.
 
+### Telegram media object storage: `MEDIA_S3_*` **Optional / Required for media download**
+Defaults: local MinIO-compatible values.
+
+Atenea can download Telegram message media from already scanned `MessageItem`
+rows and store the binary files in an S3-compatible object store. PostgreSQL
+stores only metadata, state, hash, risk flags, bucket name, and object key.
+
+The backend supports MinIO, AWS S3, Cloudflare R2, Wasabi, DigitalOcean Spaces,
+Backblaze B2 S3-compatible buckets, and other S3-compatible providers.
+
+- `MEDIA_S3_ENDPOINT_URL`: internal endpoint used by Django/Celery to upload and
+  sign objects. In local development with the provided compose file and a backend
+  running on the host, use `http://localhost:29000`. If Django/Celery run inside
+  Docker, use `http://atenea-minio:9000`.
+- `MEDIA_S3_PUBLIC_ENDPOINT_URL`: public-facing endpoint for humans/browsers.
+  Keep it aligned with the endpoint users can reach, for example
+  `http://localhost:29000` in local development or `https://media.example.org`
+  in production.
+- `MEDIA_S3_REGION`: S3 region. MinIO accepts values such as `us-east-1`.
+- `MEDIA_S3_BUCKET`: bucket where Telegram media objects are stored.
+- `MEDIA_S3_ACCESS_KEY` and `MEDIA_S3_SECRET_KEY`: credentials used by Atenea and
+  by the MinIO container when the bundled MinIO service is used.
+- `MEDIA_S3_ADDRESSING_STYLE`: use `path` for MinIO and many S3-compatible
+  services. Use `virtual` only when your provider requires virtual-hosted style.
+- `MEDIA_S3_USE_SSL`: set to `true` when `MEDIA_S3_ENDPOINT_URL` uses HTTPS.
+- `MEDIA_S3_VERIFY_SSL`: controls TLS verification. Use `true` for public CA
+  certificates, `false` only for local/self-signed development, or an absolute
+  path to a CA bundle inside the Django/Celery container, for example
+  `/etc/ssl/certs/minio-ca.crt`.
+- `MEDIA_S3_PRESIGNED_TTL_SECONDS`: expiration time for signed download URLs.
+- `MEDIA_S3_MAX_FILE_SIZE_BYTES`: default maximum file size, in bytes, accepted
+  by the media download endpoint. The request can override it up to the
+  serializer limit.
+- `MEDIA_S3_CREATE_BUCKET`: if `true`, Atenea attempts to create the bucket when
+  uploading the first object.
+- `MEDIA_DOWNLOAD_PROGRESS_TTL_SECONDS`: time in seconds that Redis keeps media
+  download progress counters after the request token is created. Default: `86400`
+  seconds.
+- `MEDIA_DOWNLOADABLE_DELETE_CONFIRM_THRESHOLD`: number of bucket media rows that
+  can be deleted with `dry_run=false` before the request must also include
+  `confirm=true`. Default: `25`.
+
+Typical local development values when Django/Celery run on the host:
+```env
+MEDIA_S3_ENDPOINT_URL=http://localhost:29000
+MEDIA_S3_PUBLIC_ENDPOINT_URL=http://localhost:29000
+MEDIA_S3_REGION=us-east-1
+MEDIA_S3_BUCKET=atenea-telegram-media
+MEDIA_S3_ACCESS_KEY=<random-access-key>
+MEDIA_S3_SECRET_KEY=<random-secret-key>
+MEDIA_S3_ADDRESSING_STYLE=path
+MEDIA_S3_USE_SSL=false
+MEDIA_S3_VERIFY_SSL=false
+MEDIA_S3_PRESIGNED_TTL_SECONDS=900
+MEDIA_S3_MAX_FILE_SIZE_BYTES=52428800
+MEDIA_S3_CREATE_BUCKET=true
+MEDIA_DOWNLOAD_PROGRESS_TTL_SECONDS=86400
+MEDIA_DOWNLOADABLE_DELETE_CONFIRM_THRESHOLD=25
+```
+
+### `MEDIA_EXTERNAL_URL_WHITELIST_EXTRA` **Optional**
+Default: empty.
+
+Comma-separated list of extra external download/cloud domains to include in the
+downloadable catalog. Atenea ships with a built-in whitelist for common providers
+such as Google Drive, Dropbox, OneDrive, Mega, MediaFire, WeTransfer, Box,
+iCloud, pCloud, GitHub raw files, GitLab, Archive.org, IPFS gateways, and
+Nextcloud/OwnCloud patterns.
+
+Example:
+```env
+MEDIA_EXTERNAL_URL_WHITELIST_EXTRA=files.example.org,downloads.example.net,nextcloud.my-org.org
+```
+
 ### `DEPLOYMENT_UNIQUE_SUFFIX` **Optional**
 Default: empty string.
 

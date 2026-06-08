@@ -16,6 +16,13 @@ from app_metadata.services.pipelines import (
 )
 from app_metadata.services.embeddings import run_categorizer
 from app_metadata.services.api import embed_search
+from app_telegram.services.media import (
+    build_downloadable_catalog,
+    delete_downloadable_items,
+    external_url_collect_pipeline,
+    get_media_download_progress,
+    media_download_pipeline,
+)
 import logging
 
 
@@ -451,9 +458,131 @@ def msg_scanning_comments(
 
     return total_items
 
+
+def msg_media_download(
+    token=None,
+    room=[],
+    tags=[],
+    tag_match=TAG_ANY,
+    lang=[],
+    createdat_min=None,
+    createdat_max=None,
+    stored_since=None,
+    is_reply=None,
+    extensions=[],
+    max_file_size_bytes=None,
+    metadata_only=False,
+    force=False,
+):
+    return media_download_pipeline(
+        token=token,
+        room=room,
+        tags=tags,
+        tag_match=tag_match,
+        lang=lang,
+        createdat_min=createdat_min,
+        createdat_max=createdat_max,
+        stored_since=stored_since,
+        is_reply=is_reply,
+        extensions=extensions,
+        max_file_size_bytes=max_file_size_bytes,
+        metadata_only=metadata_only,
+        force=force,
+    )
+
+
+def msg_external_url_collect(
+    token=None,
+    room=[],
+    tags=[],
+    tag_match=TAG_ANY,
+    lang=[],
+    createdat_min=None,
+    createdat_max=None,
+    stored_since=None,
+    is_reply=None,
+    use_text_fallback=True,
+):
+    return external_url_collect_pipeline(
+        token=token,
+        room=room,
+        tags=tags,
+        tag_match=tag_match,
+        lang=lang,
+        createdat_min=createdat_min,
+        createdat_max=createdat_max,
+        stored_since=stored_since,
+        is_reply=is_reply,
+        use_text_fallback=use_text_fallback,
+    )
+
+
+def msg_downloadable_catalog(
+    room=[],
+    tags=[],
+    tag_match=TAG_ANY,
+    lang=[],
+    createdat_min=None,
+    createdat_max=None,
+    stored_since=None,
+    is_reply=None,
+    provider=None,
+    ext=None,
+    status=None,
+    source="all",
+    limit=100,
+    max_items=100,
+):
+    return build_downloadable_catalog(
+        room=room,
+        tags=tags,
+        tag_match=tag_match,
+        lang=lang,
+        createdat_min=createdat_min,
+        createdat_max=createdat_max,
+        stored_since=stored_since,
+        is_reply=is_reply,
+        provider=provider,
+        ext=ext,
+        status=status,
+        source=source,
+        limit=limit,
+        max_items=max_items,
+    )
+
+
+def msg_downloadable_delete(
+    room=[],
+    tags=[],
+    tag_match=TAG_ANY,
+    createdat_min=None,
+    createdat_max=None,
+    ext=None,
+    min_size_bytes=None,
+    dry_run=False,
+    confirm=False,
+):
+    return delete_downloadable_items(
+        room=room,
+        tags=tags,
+        tag_match=tag_match,
+        createdat_min=createdat_min,
+        createdat_max=createdat_max,
+        ext=ext,
+        min_size_bytes=min_size_bytes,
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+def msg_media_download_progress(token):
+    return get_media_download_progress(token)
+
 def msg_ner(
     token, 
     room = [], 
+    tags = [],
+    tag_match = TAG_ANY,
     is_reply = None,
     createdat_min = None,
     createdat_max = None,
@@ -465,6 +594,8 @@ def msg_ner(
     # Use wrapper
     ner_extraction_msgs_pipeline(
         room=room,
+        tags=tags,
+        tag_match=tag_match,
         is_reply=is_reply,
         createdat_min=createdat_min,
         createdat_max=createdat_max,
@@ -550,6 +681,8 @@ def msg_sentiment(
 def msg_index(
     token,
     room = [], 
+    tags = [],
+    tag_match = TAG_ANY,
     is_reply = None,
     createdat_min = None,
     createdat_max = None,
@@ -592,6 +725,8 @@ def msg_index(
     """
     index_msgs_pipeline(
         room=room,
+        tags=tags,
+        tag_match=tag_match,
         is_reply=is_reply,
         createdat_min=createdat_min,
         createdat_max=createdat_max,
@@ -607,6 +742,8 @@ def msg_embed(
     instruct = "",
     slot="default",
     room = [], 
+    tags = [],
+    tag_match = TAG_ANY,
     is_reply = None,
     createdat_min = None,
     createdat_max = None,
@@ -622,6 +759,8 @@ def msg_embed(
         instruct=instruct,
         slot=slot,
         room=room,
+        tags=tags,
+        tag_match=tag_match,
         is_reply=is_reply,
         createdat_min=createdat_min,
         createdat_max=createdat_max,
@@ -638,6 +777,8 @@ def _func_msg(
     task_func,
     embed_field_name,
     room = [], 
+    tags = [],
+    tag_match = TAG_ANY,
     is_reply = None,
     createdat_min = None,
     createdat_max = None,
@@ -664,8 +805,9 @@ def _func_msg(
         model_class_embeddings_field_name=embed_field_name,
         and_filter_fields=and_filter_fields,
         list_filter_fields={
-            "room__unique_name__iexact": {"values": [r.strip() for r in room], "OR": True}
-        } if room else {},
+            "room__unique_name__iexact": {"values": [r.strip() for r in room], "OR": True},
+            "room__tags__icontains": {"values": tags, "OR": tag_match == TAG_ANY},
+        },
         apply_distinct=False, # With the current filters there is no risk of duplicates.
         block_size=block_size
     )
@@ -673,6 +815,8 @@ def _func_msg(
 def msg_categorize(
     token, 
     room = [], 
+    tags = [],
+    tag_match = TAG_ANY,
     is_reply = None,
     createdat_min = None,
     createdat_max = None,
@@ -687,6 +831,8 @@ def msg_categorize(
         task_func=run_categorizer,
         embed_field_name="cat_embeddings",
         room=room,
+        tags=tags,
+        tag_match=tag_match,
         is_reply=is_reply,
         createdat_min=createdat_min,
         createdat_max=createdat_max,
@@ -705,7 +851,16 @@ def msg_search_embeds(token, q, instruct="", empty=False):
         empty=empty
     )
 
-def _filter_messages(qs, createdat_min=None, createdat_max=None, stored_since=None, room=None, is_reply=None):
+def _filter_messages(
+    qs,
+    createdat_min=None,
+    createdat_max=None,
+    stored_since=None,
+    room=None,
+    is_reply=None,
+    tags=None,
+    tag_match=TAG_ANY,
+):
     """Helper function to apply common filters to a message queryset."""
     if createdat_min:
         qs = qs.filter(created_at__gte=createdat_min)
@@ -725,6 +880,18 @@ def _filter_messages(qs, createdat_min=None, createdat_max=None, stored_since=No
 
     if is_reply is not None:
         qs = qs.filter(is_reply=is_reply)
+
+    if tags:
+        qs = qs.filter(
+            create_advance_filter(
+                list_filter_fields={
+                    "room__tags__icontains": {
+                        "values": tags,
+                        "OR": tag_match == TAG_ANY,
+                    }
+                }
+            )
+        )
         
     return qs
 
@@ -733,7 +900,9 @@ def get_messages_embeddings(
     createdat_max=None, 
     stored_since=None, 
     room=None,
-    is_reply=None
+    is_reply=None,
+    tags=None,
+    tag_match=TAG_ANY,
 ):
     """Retrieves a filtered list of message embeddings.
 
@@ -749,6 +918,10 @@ def get_messages_embeddings(
         List of room unique names to filter by.
     is_reply: bool, optional
         Filter messages that are replies.
+    tags: List[str], optional
+        List of room tags to filter by.
+    tag_match: str, default="any"
+        Determines if rooms should match all given tags or any of them.
 
     Returns
     -------
@@ -756,7 +929,16 @@ def get_messages_embeddings(
         A queryset of MessageItem objects with embeddings.
     """
     qs = MessageItem.objects.filter(embeddings__isnull=False).select_related('embeddings', 'room')
-    qs = _filter_messages(qs, createdat_min, createdat_max, stored_since, room, is_reply)
+    qs = _filter_messages(
+        qs,
+        createdat_min,
+        createdat_max,
+        stored_since,
+        room,
+        is_reply,
+        tags,
+        tag_match,
+    )
     return qs.order_by('created_at', 'id')
 
 def get_messages(
@@ -764,7 +946,9 @@ def get_messages(
     createdat_max=None, 
     stored_since=None, 
     room=None,
-    is_reply=None
+    is_reply=None,
+    tags=None,
+    tag_match=TAG_ANY,
 ):
     """Retrieves a filtered list of messages.
 
@@ -780,6 +964,10 @@ def get_messages(
         List of room unique names to filter by.
     is_reply: bool, optional
         Filter messages that are replies.
+    tags: List[str], optional
+        List of room tags to filter by.
+    tag_match: str, default="any"
+        Determines if rooms should match all given tags or any of them.
 
     Returns
     -------
@@ -787,5 +975,14 @@ def get_messages(
         A queryset of MessageItem objects.
     """
     qs = MessageItem.objects.select_related('room')
-    qs = _filter_messages(qs, createdat_min, createdat_max, stored_since, room, is_reply)
+    qs = _filter_messages(
+        qs,
+        createdat_min,
+        createdat_max,
+        stored_since,
+        room,
+        is_reply,
+        tags,
+        tag_match,
+    )
     return qs.order_by('created_at', 'id')

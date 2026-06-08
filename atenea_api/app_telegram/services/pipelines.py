@@ -329,6 +329,8 @@ def load_balancer_group_pks_by_auth(
 @shared_task(track_started=True)
 def index_msgs_pipeline(
     room = [], 
+    tags = [],
+    tag_match = TAG_ANY,
     is_reply = None,
     createdat_min = None,
     createdat_max = None,
@@ -349,6 +351,12 @@ def index_msgs_pipeline(
     room: List[str]
         List of channel/group names from which messages are to be extracted. By 
         default, the list will be empty and this filter will be ignored.
+
+    tags: List[str], default=[]
+        To filter the channels/groups according to this list of tags.
+
+    tag_match: str, default="any"
+        Determines if items should match all given tags ('all') or any of them ('any').
 
     is_reply: bool, default=None
         Filter messages that are replies to another message.
@@ -392,7 +400,8 @@ def index_msgs_pipeline(
             MessageItem.__name__: {
                 "and_filter_fields": and_filter_fields,
                 "list_filter_fields": {
-                    "room__unique_name__iexact": {"values": [r.strip() for r in room], "OR": True}
+                    "room__unique_name__iexact": {"values": [r.strip() for r in room], "OR": True},
+                    "room__tags__icontains": {"values": tags, "OR": tag_match == TAG_ANY},
                 }
             }
         },

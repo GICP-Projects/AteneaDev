@@ -441,6 +441,18 @@ def _get_optional_bool(env_var_name):
     return raw_value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _get_bool_or_path(env_var_name, default=False):
+    raw_value = os.getenv(env_var_name)
+    if raw_value in (None, ""):
+        return default
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return raw_value
+
+
 QDRANT = QdrantConfig(
     url=os.getenv("QDRANT_URL", "http://localhost:6333"),
     api_key=os.getenv("QDRANT_API_KEY") or None,
@@ -464,6 +476,83 @@ QDRANT = QdrantConfig(
         ),
     }
 )
+
+
+MEDIA_S3 = {
+    "endpoint_url": os.getenv("MEDIA_S3_ENDPOINT_URL", "http://localhost:9000"),
+    "public_endpoint_url": os.getenv("MEDIA_S3_PUBLIC_ENDPOINT_URL", "http://localhost:9000"),
+    "region": os.getenv("MEDIA_S3_REGION", "us-east-1"),
+    "bucket": os.getenv("MEDIA_S3_BUCKET", "atenea-telegram-media"),
+    "access_key": os.getenv("MEDIA_S3_ACCESS_KEY", "minioadmin"),
+    "secret_key": os.getenv("MEDIA_S3_SECRET_KEY", "minioadmin"),
+    "addressing_style": os.getenv("MEDIA_S3_ADDRESSING_STYLE", "path"),
+    "use_ssl": os.getenv("MEDIA_S3_USE_SSL", "false").strip().lower() in {"1", "true", "yes", "y", "on"},
+    "verify_ssl": _get_bool_or_path("MEDIA_S3_VERIFY_SSL", False),
+    "presigned_ttl_seconds": int(os.getenv("MEDIA_S3_PRESIGNED_TTL_SECONDS", "900")),
+    "max_file_size_bytes": int(os.getenv("MEDIA_S3_MAX_FILE_SIZE_BYTES", "52428800")),
+    "create_bucket": os.getenv("MEDIA_S3_CREATE_BUCKET", "true").strip().lower() in {"1", "true", "yes", "y", "on"},
+}
+
+MEDIA_DOWNLOAD_PROGRESS_TTL_SECONDS = int(
+    os.getenv("MEDIA_DOWNLOAD_PROGRESS_TTL_SECONDS", "86400")
+)
+MEDIA_DOWNLOADABLE_DELETE_CONFIRM_THRESHOLD = int(
+    os.getenv("MEDIA_DOWNLOADABLE_DELETE_CONFIRM_THRESHOLD", "25")
+)
+
+MEDIA_EXTERNAL_URL_WHITELIST = [
+    "drive.google.com",
+    "docs.google.com",
+    "storage.googleapis.com",
+    "dropbox.com",
+    "dl.dropboxusercontent.com",
+    "onedrive.live.com",
+    "1drv.ms",
+    "sharepoint.com",
+    "mega.nz",
+    "mega.co.nz",
+    "mediafire.com",
+    "wetransfer.com",
+    "we.tl",
+    "box.com",
+    "app.box.com",
+    "icloud.com",
+    "pcloud.com",
+    "my.pcloud.com",
+    "sync.com",
+    "icedrive.net",
+    "terabox.com",
+    "4shared.com",
+    "sendspace.com",
+    "gofile.io",
+    "file.io",
+    "files.fm",
+    "pixeldrain.com",
+    "catbox.moe",
+    "litterbox.catbox.moe",
+    "krakenfiles.com",
+    "workupload.com",
+    "filetransfer.io",
+    "transfer.sh",
+    "ufile.io",
+    "dropmefiles.com",
+    "disk.yandex.com",
+    "disk.yandex.ru",
+    "cloud.mail.ru",
+    "github.com",
+    "raw.githubusercontent.com",
+    "gitlab.com",
+    "bitbucket.org",
+    "archive.org",
+    "ipfs.io",
+    "cloudflare-ipfs.com",
+    "nextcloud.*",
+    "owncloud.*",
+] + [
+    domain.strip().lower()
+    for domain in os.getenv("MEDIA_EXTERNAL_URL_WHITELIST_EXTRA", "").split(",")
+    if domain.strip()
+]
 
 
 SENTIMENT_SERVICE = BaseServiceConfig(

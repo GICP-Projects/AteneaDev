@@ -12,6 +12,7 @@ The production environment runs containers:
 - Atenea Backend
 - PostgreSQL server. Relational DB where the data is stored. 
 - Redis server. Cache DB to use it as broker for the queues.
+- MinIO server, unless an external S3-compatible object store is configured.
 - Celery queues for default tasks, NER, embeddings, and indexing.
 - Sentiment tasks are routed to `sentiment-q`; start an additional worker for that queue if sentiment classification is enabled in the deployment.
 - Celery beat server. For task scheduling.
@@ -20,6 +21,75 @@ Production deployment (**--env-file <path to .env.prod>**) is done by running th
 ```bash
 docker-compose -f production.yaml --env-file ../.env.prod -p atenea-prod up -d
 ```
+
+### Telegram media object storage
+
+Atenea stores downloaded Telegram media in S3-compatible object storage. The
+production compose file includes a MinIO service for deployments that do not use
+an external S3 provider. PostgreSQL stores only metadata, hashes, state and object
+keys.
+
+If using the bundled MinIO service internally, start with:
+```env
+MEDIA_S3_ENDPOINT_URL=http://atenea-minio:9000
+MEDIA_S3_PUBLIC_ENDPOINT_URL=https://media.example.org
+MEDIA_S3_REGION=us-east-1
+MEDIA_S3_BUCKET=atenea-telegram-media
+MEDIA_S3_ACCESS_KEY=<strong-random-access-key>
+MEDIA_S3_SECRET_KEY=<strong-random-secret-key>
+MEDIA_S3_ADDRESSING_STYLE=path
+MEDIA_S3_USE_SSL=false
+MEDIA_S3_VERIFY_SSL=false
+MEDIA_S3_PRESIGNED_TTL_SECONDS=900
+MEDIA_S3_MAX_FILE_SIZE_BYTES=52428800
+MEDIA_S3_CREATE_BUCKET=true
+MEDIA_DOWNLOAD_PROGRESS_TTL_SECONDS=86400
+```
+
+In this layout, keep MinIO private inside the Docker network and expose it
+through a TLS-terminating reverse proxy at `MEDIA_S3_PUBLIC_ENDPOINT_URL`.
+Configure the reverse proxy to forward S3 requests to `atenea-minio:9000`.
+
+If using an external S3-compatible provider, use HTTPS and certificate
+verification:
+```env
+MEDIA_S3_ENDPOINT_URL=https://s3.example-provider.com
+MEDIA_S3_PUBLIC_ENDPOINT_URL=https://s3.example-provider.com
+MEDIA_S3_REGION=<provider-region>
+MEDIA_S3_BUCKET=atenea-telegram-media
+MEDIA_S3_ACCESS_KEY=<provider-access-key>
+MEDIA_S3_SECRET_KEY=<provider-secret-key>
+MEDIA_S3_ADDRESSING_STYLE=path
+MEDIA_S3_USE_SSL=true
+MEDIA_S3_VERIFY_SSL=true
+MEDIA_S3_CREATE_BUCKET=false
+```
+
+For MinIO with a private/self-managed CA and direct HTTPS from Django/Celery,
+mount the CA bundle into every backend and worker container and set
+`MEDIA_S3_VERIFY_SSL` to the path inside the container:
+```env
+MEDIA_S3_ENDPOINT_URL=https://atenea-minio:9000
+MEDIA_S3_PUBLIC_ENDPOINT_URL=https://media.example.org
+MEDIA_S3_USE_SSL=true
+MEDIA_S3_VERIFY_SSL=/etc/ssl/certs/minio-ca.crt
+```
+
+The MinIO server certificate and key must be mounted inside the MinIO container
+at:
+```text
+/root/.minio/certs/public.crt
+/root/.minio/certs/private.key
+```
+
+Do not use `MEDIA_S3_VERIFY_SSL=false` in production except during a temporary
+diagnostic window. It disables TLS certificate validation for Django/Celery S3
+requests.
+
+Media download progress is stored in Redis using the request token returned by
+`/api/v1/tg/msg/media/download`. Keep `MEDIA_DOWNLOAD_PROGRESS_TTL_SECONDS`
+large enough for operators or UI clients to inspect long-running jobs after they
+finish; `86400` seconds is a reasonable default.
 
 Create a superuser to access the admin panel:
 ```bash

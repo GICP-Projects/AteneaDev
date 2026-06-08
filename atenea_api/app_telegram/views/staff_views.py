@@ -1,6 +1,8 @@
 from rest_framework import viewsets, status
+from rest_framework.response import Response
 from rest_framework.permissions import IsAdminUser
 from rest_framework.decorators import action
+from django.conf import settings
 from drf_spectacular.utils import (
     extend_schema,
     OpenApiResponse,
@@ -15,6 +17,11 @@ from app_telegram.serializers import (
     FilterMsgSerializer,
     ScanRepliesMsgSerializer,
     EmbedFilterMsgSerializer,
+    DownloadableCatalogSerializer,
+    DownloadableDeleteSerializer,
+    ExternalUrlCollectSerializer,
+    MediaDownloadSerializer,
+    MediaDownloadStatusSerializer,
     TelegramAuthSerializer,
     FilterTelegramAuthSerializer,
     SimpleMessageFilterSerializer,
@@ -35,6 +42,14 @@ import logging
 
 # Get an instance of a logger
 logger = logging.getLogger(__name__)
+
+
+def _normalize_tag_params(params):
+    # Rename public query param tag = [..] to internal service arg tags = [...]
+    if "tag" in params:
+        params["tags"] = params.pop("tag")
+    return params
+
 
 # ===============================================================
 # ========       TELEGRAM APP VIEWS FUNCTIONALITY        ========
@@ -736,6 +751,217 @@ class MessageView(viewsets.ViewSet):
             return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @extend_schema(
+        parameters=[MediaDownloadSerializer],
+        tags=['Data processing endpoints'],
+        summary="Download Telegram media files from already scanned messages.",
+        description=(
+            "Queues media download tasks for messages already stored in Atenea. "
+            "Only PHOTO, VIDEO, AUDIO, DOCUMENT and GIF messages are considered."
+        ),
+        responses={
+            status.HTTP_202_ACCEPTED: OpenApiResponse(
+                response=GenericResponseSerializer,
+                description="The media download scheduler has been queued."
+            ),
+            status.HTTP_400_BAD_REQUEST: OpenApiResponse(response=GenericResponseSerializer),
+            status.HTTP_500_INTERNAL_SERVER_ERROR: OpenApiResponse(response=GenericResponseSerializer),
+        },
+    )
+    @action(methods=['get'], detail=False, url_path='media/download', url_name='{basename}-media-download')
+    def media_download(self, request):
+        token = None
+        try:
+            params, token = parse_request_data(request, MediaDownloadSerializer)
+            if "tag" in params:
+                params["tags"] = params.pop("tag")
+            api.msg_media_download(token, **params)
+            return create_message(
+                token,
+                status.HTTP_202_ACCEPTED,
+                "The media download scheduler has been queued. Use the returned token to inspect scheduling and worker progress."
+            )
+        except LoggedValidationError as e:
+            logger.info(f"{ e.__class__.__name__ }: {e.detail}")
+            return create_message(
+                e.token,
+                status.HTTP_400_BAD_REQUEST,
+                "There were some issues with the input data.",
+                add_errors=e.detail
+            )
+        except Exception as e:
+            logger.error(f"{ e.__class__.__name__ }: {e}")
+            return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @extend_schema(
+        parameters=[MediaDownloadStatusSerializer],
+        tags=['Data Retrieval endpoints'],
+        summary="Retrieve progress for a Telegram media download request.",
+        description=(
+            "Returns Redis-backed progress counters for a media download request "
+            "using the token returned by /tg/msg/media/download."
+        ),
+        responses={
+            status.HTTP_200_OK: OpenApiResponse(description="Media download progress."),
+            status.HTTP_400_BAD_REQUEST: OpenApiResponse(response=GenericResponseSerializer),
+            status.HTTP_404_NOT_FOUND: OpenApiResponse(response=GenericResponseSerializer),
+            status.HTTP_500_INTERNAL_SERVER_ERROR: OpenApiResponse(response=GenericResponseSerializer),
+        },
+    )
+    @action(methods=['get'], detail=False, url_path='media/download/status', url_name='{basename}-media-download-status')
+    def media_download_status(self, request):
+        token = None
+        try:
+            params, _ = parse_request_data(
+                request,
+                MediaDownloadStatusSerializer,
+                to_log_query=False,
+            )
+            token = params["token"]
+            progress = api.msg_media_download_progress(token)
+            if not progress:
+                return create_message(
+                    token,
+                    status.HTTP_404_NOT_FOUND,
+                    "No media download progress was found for that token."
+                )
+            return Response(
+                {
+                    "token": str(token),
+                    "results": progress,
+                },
+                status=status.HTTP_200_OK,
+            )
+        except LoggedValidationError as e:
+            logger.info(f"{ e.__class__.__name__ }: {e.detail}")
+            return create_message(
+                e.token,
+                status.HTTP_400_BAD_REQUEST,
+                "There were some issues with the input data.",
+                add_errors=e.detail
+            )
+        except Exception as e:
+            logger.error(f"{ e.__class__.__name__ }: {e}")
+            return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @extend_schema(
+        parameters=[ExternalUrlCollectSerializer],
+        tags=['Data processing endpoints'],
+        summary="Collect external downloadable URLs from already scanned messages.",
+        description=(
+            "Queues tasks to persist whitelisted download/cloud URLs detected in "
+            "message URL entities or, optionally, message text."
+        ),
+        responses={
+            status.HTTP_202_ACCEPTED: OpenApiResponse(response=GenericResponseSerializer),
+            status.HTTP_400_BAD_REQUEST: OpenApiResponse(response=GenericResponseSerializer),
+            status.HTTP_500_INTERNAL_SERVER_ERROR: OpenApiResponse(response=GenericResponseSerializer),
+        },
+    )
+    @action(methods=['get'], detail=False, url_path='external-url/collect', url_name='{basename}-external-url-collect')
+    def external_url_collect(self, request):
+        token = None
+        try:
+            params, token = parse_request_data(request, ExternalUrlCollectSerializer)
+            if "tag" in params:
+                params["tags"] = params.pop("tag")
+            num_messages = api.msg_external_url_collect(token, **params)
+            return create_message(
+                token,
+                status.HTTP_202_ACCEPTED,
+                f"The external URL collection tasks have been queued. {num_messages} messages matched the filters."
+            )
+        except LoggedValidationError as e:
+            logger.info(f"{ e.__class__.__name__ }: {e.detail}")
+            return create_message(
+                e.token,
+                status.HTTP_400_BAD_REQUEST,
+                "There were some issues with the input data.",
+                add_errors=e.detail
+            )
+        except Exception as e:
+            logger.error(f"{ e.__class__.__name__ }: {e}")
+            return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @extend_schema(
+        methods=["GET"],
+        parameters=[DownloadableCatalogSerializer],
+        tags=['Data Retrieval endpoints'],
+        summary="Retrieve downloadable media and external URLs grouped by channel.",
+        description=(
+            "Returns bucket media download links and whitelisted external download "
+            "URLs grouped by Telegram channel/group."
+        ),
+        responses={
+            status.HTTP_200_OK: OpenApiResponse(description="Grouped downloadable catalog."),
+            status.HTTP_400_BAD_REQUEST: OpenApiResponse(response=GenericResponseSerializer),
+            status.HTTP_500_INTERNAL_SERVER_ERROR: OpenApiResponse(response=GenericResponseSerializer),
+        },
+    )
+    @extend_schema(
+        methods=["DELETE"],
+        parameters=[DownloadableDeleteSerializer],
+        tags=['Data processing endpoints'],
+        summary="Delete downloaded bucket media.",
+        description=(
+            "Deletes matching S3/MinIO media objects and marks their metadata as "
+            "deleted. This endpoint only targets bucket media currently marked as "
+            "downloaded; external URLs are catalog-only references and are never "
+            "deleted here. At least one room or tag filter is required to avoid "
+            "accidental broad deletes. dry_run defaults to false, so use "
+            "dry_run=true explicitly to preview the matched count before deleting. "
+            "If the match count is "
+            f"greater than {settings.MEDIA_DOWNLOADABLE_DELETE_CONFIRM_THRESHOLD}, the request "
+            "must include confirm=true. Example: "
+            "DELETE /api/v1/tg/msg/downloadable?room=<room>&ext=mp4&dry_run=true"
+        ),
+        responses={
+            status.HTTP_200_OK: OpenApiResponse(description="Downloadable items deleted."),
+            status.HTTP_400_BAD_REQUEST: OpenApiResponse(response=GenericResponseSerializer),
+            status.HTTP_500_INTERNAL_SERVER_ERROR: OpenApiResponse(response=GenericResponseSerializer),
+        },
+    )
+    @action(methods=['get', 'delete'], detail=False, url_path='downloadable', url_name='{basename}-downloadable')
+    def downloadable(self, request):
+        token = None
+        try:
+            if request.method == "DELETE":
+                params, token = parse_request_data(request, DownloadableDeleteSerializer)
+                if "tag" in params:
+                    params["tags"] = params.pop("tag")
+                results = api.msg_downloadable_delete(**params)
+                return Response(
+                    {
+                        "token": token,
+                        "results": results,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            params, token = parse_request_data(request, DownloadableCatalogSerializer)
+            if "tag" in params:
+                params["tags"] = params.pop("tag")
+            results = api.msg_downloadable_catalog(**params)
+            return Response(
+                {
+                    "token": token,
+                    "count": len(results),
+                    "results": results,
+                },
+                status=status.HTTP_200_OK,
+            )
+        except LoggedValidationError as e:
+            logger.info(f"{ e.__class__.__name__ }: {e.detail}")
+            return create_message(
+                e.token,
+                status.HTTP_400_BAD_REQUEST,
+                "There were some issues with the input data.",
+                add_errors=e.detail
+            )
+        except Exception as e:
+            logger.error(f"{ e.__class__.__name__ }: {e}")
+            return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @extend_schema(
         parameters=[FilterMsgSerializer],
         tags=['Data processing endpoints'],
         summary="Process name entity recognition (NER) in a list of messages.",
@@ -763,6 +989,7 @@ class MessageView(viewsets.ViewSet):
                 request,
                 FilterMsgSerializer,
             )
+            params = _normalize_tag_params(params)
             api.msg_ner(token, **params)
             return create_message(token, status.HTTP_202_ACCEPTED)
         except LoggedValidationError as e:
@@ -809,6 +1036,7 @@ class MessageView(viewsets.ViewSet):
                 request,
                 FilterMsgSerializer,
             )
+            params = _normalize_tag_params(params)
             api.msg_index(token, **params)
             return create_message(token, status.HTTP_202_ACCEPTED)
         except LoggedValidationError as e:
@@ -855,6 +1083,7 @@ class MessageView(viewsets.ViewSet):
                 request,
                 EmbedFilterMsgSerializer,
             )
+            params = _normalize_tag_params(params)
             api.msg_embed(token, **params)
             return create_message(token, status.HTTP_202_ACCEPTED)
         except LoggedValidationError as e:
@@ -904,6 +1133,7 @@ class MessageView(viewsets.ViewSet):
                 request,
                 FilterMsgSerializer,
             )
+            params = _normalize_tag_params(params)
             api.msg_categorize(token, **params)
             return create_message(token, status.HTTP_202_ACCEPTED)
         except LoggedValidationError as e:
@@ -953,6 +1183,7 @@ class MessageView(viewsets.ViewSet):
                 request,
                 FilterMsgSerializer,
             )
+            params = _normalize_tag_params(params)
             api.msg_sentiment(token, **params)
             return create_message(token, status.HTTP_202_ACCEPTED)
         except LoggedValidationError as e:
@@ -999,6 +1230,7 @@ class MessageView(viewsets.ViewSet):
                 request,
                 SimpleMessageFilterSerializer,
             )
+            params = _normalize_tag_params(params)
             
             queryset = api.get_messages_embeddings(**params)
             
@@ -1054,6 +1286,7 @@ class MessageView(viewsets.ViewSet):
                 request,
                 SimpleMessageFilterSerializer,
             )
+            params = _normalize_tag_params(params)
             queryset = api.get_messages(**params)
             return create_paginate_response(
                 token=token,

@@ -1,4 +1,5 @@
 from datetime import datetime
+import uuid
 from django.conf import settings
 from django.utils import timezone
 from rest_framework import serializers
@@ -6,7 +7,7 @@ from app_base.languages import LANGS_ISO_639_1
 from django_elasticsearch_dsl_drf.serializers import DocumentSerializer
 from app_base.serializers import BaseDateRangeSerializer, BulkListSerializer
 from app_telegram.utils import telegram_link_normalizer
-from app_telegram.models import SeedItem, TelegramAuth, MessageItem
+from app_telegram.models import SeedItem, TelegramAuth, MessageItem, TelegramExternalUrlItem, TelegramMediaItem
 from app_metadata.serializers import EmbeddingSerializer
 from app_telegram.documents import RoomDocument, MessageDocument
 
@@ -323,6 +324,26 @@ class SimpleMessageFilterSerializer(BaseDateRangeSerializer):
             "names to filter from which rooms their messages will be processed."
         )
     )
+    tag_match = serializers.ChoiceField(
+        MATCH_CHOICES,
+        required=False,
+        default=ANY,
+        help_text=(
+            "Determines if rooms should match all given tags or any "
+            "of them. Default is 'any'."
+        )
+    )
+    tag = serializers.ListField(
+        child=serializers.CharField(max_length=64, allow_blank=False),
+        required=False,
+        max_length=20,
+        help_text=(
+            "The tag parameter accepts a list of room tags "
+            "(e.g., tag=value1&tag=value2). The matching is "
+            "case-insensitive and uses substring search. The list is "
+            "processed using OR by default or AND when tag_match=all."
+        )
+    )
 
     is_reply = serializers.BooleanField(
         required=False,
@@ -506,7 +527,202 @@ class ScanRepliesMsgSerializer(FilterMsgSerializer):
 
 
 # ==================================================================
-# 01.4 - [RESPONSE] Telegram Msg Serializers
+# 01.4 - [REQUEST] Telegram downloadable media serializers
+# ==================================================================
+
+class MediaMessageFilterSerializer(SimpleMessageFilterSerializer):
+    tag_match = serializers.ChoiceField(
+        MATCH_CHOICES,
+        required=False,
+        default=ANY,
+        help_text="Determines if rooms should match all given tags or any of them."
+    )
+    tag = serializers.ListField(
+        child=serializers.CharField(max_length=64, allow_blank=False),
+        required=False,
+        max_length=20,
+        help_text="Room tags to filter messages."
+    )
+    lang = serializers.ListField(
+        child=serializers.ChoiceField(required=False, choices=LANGS_ISO_639_1),
+        required=False,
+        help_text="Language codes in ISO 639-1 format."
+    )
+
+
+class MediaDownloadSerializer(MediaMessageFilterSerializer):
+    extensions = serializers.ListField(
+        child=serializers.CharField(max_length=32, allow_blank=False),
+        required=False,
+        help_text="Optional extension whitelist, for example extensions=pdf&extensions=exe."
+    )
+    max_file_size_bytes = serializers.IntegerField(
+        required=False,
+        min_value=1,
+        max_value=500 * 1024 * 1024,
+        help_text="Maximum file size to download in bytes. Defaults to MEDIA_S3_MAX_FILE_SIZE_BYTES."
+    )
+    metadata_only = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text="Collect Telegram media metadata without downloading or storing the binary file."
+    )
+    force = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text="Redownload media already marked as downloaded."
+    )
+
+
+class MediaDownloadStatusSerializer(serializers.Serializer):
+    token = serializers.CharField(
+        required=True,
+        max_length=36,
+        help_text="Token returned by /tg/msg/media/download."
+    )
+
+    def validate_token(self, value):
+        try:
+            return uuid.UUID(str(value)).hex
+        except ValueError as exc:
+            raise serializers.ValidationError("Invalid UUID token.") from exc
+
+
+class ExternalUrlCollectSerializer(MediaMessageFilterSerializer):
+    use_text_fallback = serializers.BooleanField(
+        required=False,
+        default=True,
+        help_text="Extract URLs from message text if URL entities are missing."
+    )
+
+
+class DownloadableCatalogSerializer(MediaMessageFilterSerializer):
+    SOURCE_ALL = "all"
+    SOURCE_BUCKET = "bucket"
+    SOURCE_EXTERNAL = "external_url"
+    SOURCE_CHOICES = [SOURCE_ALL, SOURCE_BUCKET, SOURCE_EXTERNAL]
+
+    source = serializers.ChoiceField(
+        SOURCE_CHOICES,
+        required=False,
+        default=SOURCE_ALL,
+        help_text="Return bucket files, external URLs, or both."
+    )
+    provider = serializers.CharField(max_length=64, required=False)
+    ext = serializers.ListField(
+        child=serializers.CharField(max_length=32, allow_blank=False),
+        required=False,
+        help_text="Filter bucket media by extension. Repetible: ext=mp4&ext=exe."
+    )
+    status = serializers.CharField(max_length=32, required=False)
+    limit = serializers.IntegerField(required=False, min_value=1, max_value=500, default=100)
+    max_items = serializers.IntegerField(
+        required=False,
+        min_value=1,
+        max_value=500,
+        default=100,
+        help_text="Maximum number of downloadable items returned per room."
+    )
+
+    def validate_status(self, value):
+        valid_statuses = {
+            TelegramMediaItem.PENDING,
+            TelegramMediaItem.DOWNLOADED,
+            TelegramMediaItem.SKIPPED,
+            TelegramMediaItem.FAILED,
+            TelegramMediaItem.DELETED,
+            TelegramExternalUrlItem.NOT_DOWNLOADED,
+            TelegramExternalUrlItem.DELETED,
+        }
+        if value not in valid_statuses:
+            raise serializers.ValidationError(f"Invalid status '{value}'.")
+        return value
+
+
+class DownloadableDeleteSerializer(BaseDateRangeSerializer):
+    room = serializers.ListField(
+        child=serializers.CharField(max_length=128, allow_blank=False),
+        required=False,
+        max_length=20,
+        help_text=(
+            "Telegram channels/groups to scope the delete request. At least "
+            "one room or tag filter is required."
+        )
+    )
+    tag_match = serializers.ChoiceField(
+        MATCH_CHOICES,
+        required=False,
+        default=ANY,
+        help_text="Determines if rooms should match all given tags or any of them."
+    )
+    tag = serializers.ListField(
+        child=serializers.CharField(max_length=64, allow_blank=False),
+        required=False,
+        max_length=20,
+        help_text=(
+            "Room tags to scope the delete request. At least one room or tag "
+            "filter is required."
+        )
+    )
+    createdat_min = serializers.DateField(
+        format=settings.FORMAT_DATE,
+        input_formats=[settings.FORMAT_DATE],
+        required=False,
+        help_text=(
+            "Interval start date for Telegram message creation date. "
+            f"Format: {settings.FORMAT_DATE}."
+        )
+    )
+    createdat_max = serializers.DateField(
+        format=settings.FORMAT_DATE,
+        input_formats=[settings.FORMAT_DATE],
+        required=False,
+        help_text=(
+            "Interval end date for Telegram message creation date. "
+            f"Format: {settings.FORMAT_DATE}."
+        )
+    )
+    ext = serializers.ListField(
+        child=serializers.CharField(max_length=32, allow_blank=False),
+        required=False,
+        help_text="Delete only bucket media matching any of these extensions. Repetible: ext=mp4&ext=exe."
+    )
+    min_size_bytes = serializers.IntegerField(
+        required=False,
+        min_value=0,
+        help_text="Only delete bucket media with size_bytes greater than or equal to this threshold."
+    )
+    dry_run = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text=(
+            "Preview matched bucket media without deleting S3 objects or marking "
+            "rows as deleted. Defaults to false."
+        )
+    )
+    confirm = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text=f"Required when dry_run=false and the matched media count exceeds {settings.MEDIA_DOWNLOADABLE_DELETE_CONFIRM_THRESHOLD} items."
+    )
+
+    def get_start_field_name(self):
+        return "createdat_min"
+
+    def get_end_field_name(self):
+        return "createdat_max"
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if not attrs.get("room") and not attrs.get("tag"):
+            raise serializers.ValidationError(
+                "Provide at least one room or tag filter before deleting downloadable items."
+            )
+        return attrs
+
+
+# ==================================================================
+# 01.5 - [RESPONSE] Telegram Msg Serializers
 # ==================================================================
 
 class MessageDetailSerializer(serializers.ModelSerializer):
