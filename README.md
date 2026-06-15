@@ -1,5 +1,26 @@
 # Atenea
 
+## Quick links
+* [Development deployment](./atenea_api/docs/dev_deployment.md)
+* [Production deployment](./atenea_api/docs/prod_deployment.md)
+* [Environment variables](./atenea_api/docs/enviroments.md)
+* [Extra configuration](./atenea_api/docs/configuration.md)
+
+## Table of contents
+
+* [Overview](#overview)
+* [Architecture and Design](#architecture-and-design)
+
+  * [Platform architecture](#platform-architecture)
+  * [API design](#api-design)
+  * [Platform Workflow](#platform-workflow)
+* [Installation](#installation)
+* [Quick Start](#quick-start)
+* [Configuration](#configuration)
+* [Reproducibility Notes](#reproducibility-notes)
+* [License](#license)
+* [Citation](#citation)
+
 ## Overview
 
 Atenea is a platform for continuous Telegram monitoring and the construction of persistent, enriched repositories. It combines seed-based channel discovery, credential-aware data collection, Named Entity Recognition (NER), sentiment analysis, embeddings, attachment cataloguing and preservation, and retrieval through lexical, semantic, and structured queries.
