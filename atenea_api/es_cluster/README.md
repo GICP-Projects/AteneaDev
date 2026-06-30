@@ -24,6 +24,67 @@ docker exec -it es_cluster_es01_1 \
 After this, the `es_cluster/certs/ca.crt` file will be available for Atenea to establish a secure connection.
 
 
+### How to Renew the Certificates (If Expired)
+
+If the cluster certificates expire (this usually happens when the root CA reaches its 3-year limit), you must regenerate the entire chain (CA + Node Certificates) in PEM format, apply them to the shared volume, and restart the cluster. Follow these 4 steps:
+
+#### 1. Generate and apply a NEW Certificate Authority (CA)
+
+First, create a new CA and unzip it directly into the shared volume to overwrite the expired one:
+
+```bash
+docker exec -it es_cluster_es01_1 /usr/share/elasticsearch/bin/elasticsearch-certutil ca --pem --out /usr/share/elasticsearch/new-ca.zip
+# Press Enter to leave passwords blank if asked.
+
+docker exec -it --user root es_cluster_es01_1 unzip -o /usr/share/elasticsearch/new-ca.zip -d /usr/share/elasticsearch/config/certs/
+
+```
+
+#### 2. Generate and apply the NEW Node Certificates
+
+Next, create new certificates for the cluster nodes signed by the new CA:
+
+```bash
+docker exec -it es_cluster_es01_1 /usr/share/elasticsearch/bin/elasticsearch-certutil cert --ca-cert /usr/share/elasticsearch/config/certs/ca/ca.crt --ca-key /usr/share/elasticsearch/config/certs/ca/ca.key --multiple --pem --out /usr/share/elasticsearch/new-certs.zip
+
+```
+
+> **⚠️ Important Prompt Instructions:**
+> * **Instance name:** Enter `es01` (then repeat for `es02`, `es03`).
+> * **IP addresses:** Leave blank (Press Enter).
+> * **DNS names:** Enter the docker service name and localhost (e.g., `es01,localhost`, `es02,localhost`).
+> * **Passwords:** Leave blank (Press Enter).
+> 
+> 
+
+Once finished, unzip them into the shared volume:
+
+```bash
+docker exec -it --user root es_cluster_es01_1 unzip -o /usr/share/elasticsearch/new-certs.zip -d /usr/share/elasticsearch/config/certs/
+
+```
+
+#### 3. Extract the new CA for external applications
+
+Since the root CA has changed, you must extract it to your local machine so external tools (like Atenea) can trust the cluster again:
+
+```bash
+docker exec es_cluster_es01_1 cat /usr/share/elasticsearch/config/certs/ca/ca.crt > es_cluster/certs/ca.crt
+
+```
+
+#### 4. Hard Restart the Cluster
+
+To force Elasticsearch and Kibana to release the old memory cache and load the new certificates, perform a hard stop and start:
+
+```bash
+docker restart es_cluster_es01_1 es_cluster_es02_1 es_cluster_es03_1 es_cluster_kibana_1
+
+# Also restart Atenea cluster
+
+```
+
+
 ## Obtaining an Elasticsearch API Key
 
 1. In Kibana, go to **Stack Management > Security > API Keys**.
