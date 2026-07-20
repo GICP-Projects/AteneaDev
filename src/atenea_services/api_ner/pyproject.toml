@@ -1,0 +1,41 @@
+[project]
+name = "atenea-ner"
+version = "v18.07.26"
+description = "FastAPI named entity recognition service for Atenea"
+requires-python = ">=3.11.9,<3.12"
+dependencies = [
+    "en-core-web-lg @ https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl",
+    "es-core-news-lg @ https://github.com/explosion/spacy-models/releases/download/es_core_news_lg-3.8.0/es_core_news_lg-3.8.0-py3-none-any.whl",
+    "fastapi==0.139.0",
+    "pydantic==2.13.4",
+    "python-multipart==0.0.32",
+    "spacy==3.8.14",
+    "uvicorn==0.51.0",
+]
+
+[tool.uv]
+package = false
+link-mode = "copy"
+
+[dependency-groups]
+dev = [
+    "httpx==0.28.1",
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "model_smoke: optional tests that load configured spaCy models",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["models", "src"]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

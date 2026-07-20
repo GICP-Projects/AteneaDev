@@ -1,25 +1,25 @@
 # Atenea
 
 ## Quick links
-* [Development deployment](./atenea_api/docs/dev_deployment.md)
-* [Production deployment](./atenea_api/docs/prod_deployment.md)
-* [Environment variables](./atenea_api/docs/enviroments.md)
-* [Extra configuration](./atenea_api/docs/configuration.md)
+
+- [Development deployment](./src/atenea_api/docs/dev_deployment.md)
+- [Production deployment](./src/atenea_api/docs/prod_deployment.md)
+- [Environment variables](./src/atenea_api/docs/enviroments.md)
+- [Extra configuration](./src/atenea_api/docs/configuration.md)
 
 ## Table of contents
 
-* [Overview](#overview)
-* [Architecture and Design](#architecture-and-design)
-
-  * [Platform architecture](#platform-architecture)
-  * [API design](#api-design)
-  * [Platform Workflow](#platform-workflow)
-* [Installation](#installation)
-* [Quick Start](#quick-start)
-* [Configuration](#configuration)
-* [Reproducibility Notes](#reproducibility-notes)
-* [License](#license)
-* [Citation](#citation)
+- [Overview](#overview)
+- [Architecture and Design](#architecture-and-design)
+  - [Platform architecture](#platform-architecture)
+  - [API design](#api-design)
+  - [Platform Workflow](#platform-workflow)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Reproducibility Notes](#reproducibility-notes)
+- [License](#license)
+- [Citation](#citation)
 
 ## Overview
 
@@ -83,7 +83,7 @@ flowchart LR
     Embeddings --> Workers
 ```
 
-1.  **Discover Service**: This component has spiders that are responsible for crawling and gathering information, focusing on discovering groups, channels, and bots within the Telegram network by searching different web pages or social networks.
+1.  **Seed discovery and ingestion**: Telegram groups and channels can be identified manually or with external discovery tools. Atenea receives the selected resources through its bulk seed-ingestion API; web crawlers are not bundled with this repository.
     
 2.  **Atenea API**:
     -   **Authorization**: This area ensures that only authorized users or systems can access some API endpoints, by using authentication tokens.
@@ -185,12 +185,12 @@ collection metadata; they are distinct from Telegram hashtags, extracted
 entities, and embedding-based categories.
 
 #### 1. Channel/group scouting
-First, we should search for Telegram channels by creating spiders and scraping webpages and social networks. Another option is to select those desired channels manually.
+First, identify the Telegram channels or groups to monitor, either manually or with an external discovery process. Submit the selected links to Atenea through the bulk seed-ingestion endpoint described below.
 
 #### 2. Enabling the Telegram API
 To use the Telegram API for data extraction, access credentials associated with a phone number are required. These accounts can be easily added from the administration panel in the TelegramAuth model (http://127.0.0.1:8000/admin/app_telegram/telegramauth/).
 
-<img src="./atenea_api/docs/images/AteneaDev_add_tg_auth.png" alt="Add new Telegram API Credential" width="450"/>
+<img src="./src/atenea_api/docs/images/AteneaDev_add_tg_auth.png" alt="Add new Telegram API Credential" width="450"/>
 
 - When the platform receives a request related to data extraction from Telegram, it automatically distributes the load among the available credentials.
 - Each credential can perform up to 200 `ResolveUsername` operations per day. This limit applies to resolving new usernames, not to scanning messages from known rooms. Once a room has been resolved, Atenea reuses its Telegram ID and access hash, allowing substantially larger message volumes to be monitored.
@@ -255,10 +255,11 @@ can additionally be created over the Elasticsearch indexes.
 
 Atenea is organized as a multi-component research software project:
 
-- `atenea_api`: the main Django REST Framework API.
-- `atenea_services`: auxiliary FastAPI microservices for NER and sentiment analysis.
+- `src/atenea_api`: the main Django REST Framework API.
+- `src/atenea_services`: auxiliary FastAPI microservices for NER and sentiment analysis.
 
-The recommended setup is to start the required infrastructure services with Docker and run the API in a Python virtual environment.
+The recommended setup uses [uv](https://docs.astral.sh/uv/) to create and
+synchronize an isolated environment for each Python component.
 
 1. Create the environment file from the public template:
    ```bash
@@ -267,27 +268,30 @@ The recommended setup is to start the required infrastructure services with Dock
 
 2. Fill in the required values in `.env.dev`. Do not use quotes around values that are consumed by Docker.
 
-3. Start the development infrastructure from `atenea_api`:
+3. Synchronize the API environment, then enter `src/atenea_services` to
+   synchronize the microservice environments:
    ```bash
-   cd atenea_api
-   docker-compose -f development.yaml --env-file ../.env.dev -p atenea-dev up -d
+   uv sync --project src/atenea_api
+   cd src/atenea_services
+   uv sync --project api_ner
+   uv sync --project api_sentiment
+   cd ../..
    ```
 
-4. Create and activate a Python environment for the API:
+4. Start the development infrastructure from `src/atenea_api`:
    ```bash
-   python3.11 -m venv venv
-   . venv/bin/activate
-   pip install -r requirements.txt
+   cd src/atenea_api
+   docker compose -f docker-compose.dev.yml --env-file ../../.env.dev -p atenea-dev up -d
    ```
 
-5. Run the initial Django setup:
+5. Run the initial Django setup through the synchronized API environment:
    ```bash
    export DJANGO_SETTINGS_MODULE=atenea_api.settings.development
-   python manage.py migrate
-   python manage.py createsuperuser
+   uv run python manage.py migrate
+   uv run python manage.py createsuperuser
    ```
 
-Detailed deployment instructions are available in [`atenea_api/docs/dev_deployment.md`](./atenea_api/docs/dev_deployment.md) and [`atenea_api/docs/prod_deployment.md`](./atenea_api/docs/prod_deployment.md).
+Detailed deployment instructions are available in [`src/atenea_api/docs/dev_deployment.md`](./src/atenea_api/docs/dev_deployment.md) and [`src/atenea_api/docs/prod_deployment.md`](./src/atenea_api/docs/prod_deployment.md).
 
 ## Quick Start
 
@@ -295,20 +299,19 @@ After installing the API dependencies and starting the infrastructure services:
 
 1. Launch the Django development server:
    ```bash
-   cd atenea_api
-   . venv/bin/activate
+   cd src/atenea_api
    export DJANGO_SETTINGS_MODULE=atenea_api.settings.development
-   python manage.py runserver
+   uv run python manage.py runserver
    ```
 
 2. Start the Celery workers required by the pipeline in separate terminals:
    ```bash
-   celery -A atenea_api beat -l INFO
-   celery -A atenea_api worker -Q default -n AT1@%h -l INFO --concurrency=4
-   celery -A atenea_api worker -Q index-q -n AT2@%h -l INFO --concurrency=1
-   celery -A atenea_api worker -Q ner-q -n AT3@%h -l INFO --concurrency=2
-   celery -A atenea_api worker -Q embed-q -n AT4@%h -l INFO --concurrency=1
-   celery -A atenea_api worker -Q sentiment-q -n AT5@%h -l INFO --concurrency=1
+   uv run celery -A atenea_api beat -l INFO
+   uv run celery -A atenea_api worker -Q default -n AT1@%h -l INFO --concurrency=4
+   uv run celery -A atenea_api worker -Q index-q -n AT2@%h -l INFO --concurrency=1
+   uv run celery -A atenea_api worker -Q ner-q -n AT3@%h -l INFO --concurrency=2
+   uv run celery -A atenea_api worker -Q embed-q -n AT4@%h -l INFO --concurrency=1
+   uv run celery -A atenea_api worker -Q sentiment-q -n AT5@%h -l INFO --concurrency=1
    ```
 
 3. Open the API documentation at `http://127.0.0.1:8000/swagger`.
@@ -331,13 +334,13 @@ The main configuration groups are:
 - Microservices: NER and sentiment service hosts, ports, limits, and API keys.
 - Telegram API: credentials configured through the admin panel.
 
-See [`atenea_api/docs/enviroments.md`](./atenea_api/docs/enviroments.md) for the
+See [`src/atenea_api/docs/enviroments.md`](./src/atenea_api/docs/enviroments.md) for the
 full list of variables and
-[`atenea_api/docs/configuration.md`](./atenea_api/docs/configuration.md) for
+[`src/atenea_api/docs/configuration.md`](./src/atenea_api/docs/configuration.md) for
 first-time platform configuration.
 
 The end-to-end REST workflow is documented in
-[`atenea_api/docs/api_usage.md`](./atenea_api/docs/api_usage.md).
+[`src/atenea_api/docs/api_usage.md`](./src/atenea_api/docs/api_usage.md).
 
 ## Reproducibility Notes
 
@@ -351,7 +354,7 @@ For privacy, security, and storage reasons, the public repository should not inc
 - Private Telegram datasets, exported CSV/JSON files, logs, or temporary analysis files.
 - Downloaded machine-learning model binaries unless their license and size make redistribution appropriate.
 
-External models and services must be downloaded or configured by the user during installation. Required model information is documented in [`atenea_api/models/README.md`](./atenea_api/models/README.md) and [`atenea_services/README.md`](./atenea_services/README.md).
+External models and services must be downloaded or configured by the user during installation. Required model information is documented in [`src/atenea_api/models/README.md`](./src/atenea_api/models/README.md) and [`src/atenea_services/README.md`](./src/atenea_services/README.md).
 
 ## License
 

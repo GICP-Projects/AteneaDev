@@ -1,0 +1,6 @@
+.venv
+venv
+.env
+**/models/data/
+__pycache__/
+*.py[cod]

@@ -21,10 +21,22 @@ Before opening a pull request, please:
    model files, logs, or environment files with real values.
 5. Run the relevant tests or validation steps for the affected component.
 
+Each Python component is managed as an independent uv project. Run
+`uv sync --locked` and project commands through `uv run` from the component
+directory. Commit `pyproject.toml` and `uv.lock` changes together.
+
+For API changes, start its isolated PostgreSQL service and run the suite as described
+in [`src/atenea_api/docs/testing.md`](./src/atenea_api/docs/testing.md). External
+services must be mocked in the default automated suite.
+
+The independent NER and sentiment test environments and their optional model smoke
+tests are documented in
+[`src/atenea_services/docs/testing.md`](./src/atenea_services/docs/testing.md).
+
 ## Development Notes
 
-- The API lives in `atenea_api`.
-- Auxiliary FastAPI services live in `atenea_services`.
+- The API lives in `src/atenea_api`.
+- Auxiliary FastAPI services live in `src/atenea_services`.
 
 ## Reporting Issues
 

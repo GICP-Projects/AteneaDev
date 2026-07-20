@@ -1,0 +1,39 @@
+[project]
+name = "atenea-sentiment"
+version = "v18.07.26"
+description = "FastAPI sentiment analysis service for Atenea"
+requires-python = ">=3.11.9,<3.12"
+dependencies = [
+    "fastapi==0.139.0",
+    "pydantic==2.13.4",
+    "torch==2.5.1",
+    "transformers==4.48.0",
+    "uvicorn==0.51.0",
+]
+
+[tool.uv]
+package = false
+link-mode = "copy"
+
+[dependency-groups]
+dev = [
+    "httpx==0.28.1",
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "model_smoke: optional tests that load the configured Transformers model",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["models", "src"]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
