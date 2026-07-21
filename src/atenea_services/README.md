@@ -83,6 +83,27 @@ uv sync --locked --project api_ner
 Do not use `python -m spacy download` in the Docker build: an unversioned
 download can silently select a different compatible model in a later build.
 
+#### Step 3: Enable the language in Atenea
+
+Add the same ISO-639-1 language code to `NER_SERVICE.languages` in
+`src/atenea_api/atenea_api/settings/base.py`. For example:
+
+```python
+NER_SERVICE = ServiceConfig(
+    # ...
+    languages=("en", "es", "fr"),
+)
+```
+
+Registering the model in API-NER is not sufficient by itself. Atenea uses this
+allow-list to determine which detected languages are submitted to the
+microservice for model-based NER. After changing both configurations, redeploy
+the API-NER microservice and the Atenea backend.
+
+If the new spaCy pipeline produces labels that differ from Atenea's canonical
+entity taxonomy, update the label normalization mapping in
+`api_ner/src/models/ner.py` and its tests accordingly.
+
 ## API EMBEDDINGS (moved out of `atenea_services`)
 Embeddings are no longer served by an internal microservice in this repository.
 Atenea now consumes embeddings through an OpenAI-compatible endpoint configured
