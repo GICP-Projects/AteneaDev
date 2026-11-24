@@ -1,13 +1,13 @@
 services:
   sentiment-api-gpu1:
-    image: "gicp/atenea/sentiment:${ATENEA_VERSION:-v18.07.26}"
-    build: ./api_sentiment
+    image: "ghcr.io/srfonso/atenea-sentiment:${ATENEA_VERSION:?Set ATENEA_VERSION}"
     restart: unless-stopped
     volumes:
       - ${SENTIMENT_MODEL_PATH}:/root/.cache/huggingface
     #ports: # Custom external port doesn't work with --scale
     #  - 23540:8000
     environment:
+      ATENEA_VERSION: ${ATENEA_VERSION:?Set ATENEA_VERSION}
       UVICORN_WORKERS: ${SENTIMENT_UVICORN_WORKERS}
       API_KEY: ${SENTIMENT_SERVICE_API_KEY}
       MODEL_NAME: ${SENTIMENT_SERVICE_MODEL_NAME}
@@ -38,14 +38,14 @@ services:
                 - gpu
 
   sentiment-api-gpu2:
-    image: "gicp/atenea/sentiment:${ATENEA_VERSION:-v18.07.26}"
-    build: ./api_sentiment
+    image: "ghcr.io/srfonso/atenea-sentiment:${ATENEA_VERSION:?Set ATENEA_VERSION}"
     restart: unless-stopped
     volumes:
       - ${SENTIMENT_MODEL_PATH}:/root/.cache/huggingface
     #ports: # Custom external port doesn't work with --scale
     #  - 23540:8000
     environment:
+      ATENEA_VERSION: ${ATENEA_VERSION:?Set ATENEA_VERSION}
       UVICORN_WORKERS: ${SENTIMENT_UVICORN_WORKERS}
       API_KEY: ${SENTIMENT_SERVICE_API_KEY}
       MODEL_NAME: ${SENTIMENT_SERVICE_MODEL_NAME}

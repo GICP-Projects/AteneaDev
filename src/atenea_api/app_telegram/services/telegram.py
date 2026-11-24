@@ -3,14 +3,20 @@ import uuid
 import time
 import logging
 import asyncio
+import sys
+from dataclasses import dataclass, field, replace
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+from asgiref.sync import async_to_sync, sync_to_async
 #import traceback
 from itertools import chain as iterchain
 from collections import ChainMap
 from django.apps import apps
 from django.conf import settings
+from django.contrib.contenttypes.models import ContentType
 from django.utils import timezone
 from django.db.models import Prefetch
-from django.db import transaction, IntegrityError
+from django.db import transaction, IntegrityError, OperationalError, close_old_connections, connections
 from app_base.tagger import extract_tags
 from app_base.utils import (
     convert_to_standard_text, 
@@ -18,12 +24,16 @@ from app_base.utils import (
     detect_lang,
     AsyncTimedIterable
 )
-from app_base.documents import update_index
 from app_base.api import (
     create_advance_filter,
     bulk_add_query_relationships, 
     bulk_add_generic_relationships,
 )
+from app_entity.ner_state import NER_INPUT_NORMALIZER_VERSION, build_ner_input_hash
+from app_scheduler.db import retry_on_deadlock
+from app_scheduler.contracts import ProcessingSummary, empty_processing_summary
+from app_scheduler.enums import ItemProgressState, JobStatus, TaskOutcome
+from app_telegram.enums import SCAN_COMMENT_PARENT_TERMINAL_STATES
 from app_telegram.models import (
     SeedItem, 
     TelegramAuth, 
@@ -32,14 +42,18 @@ from app_telegram.models import (
     UserItem, 
     MessageItem
 )
-from app_telegram.documents import RoomDocument, MessageDocument
-from app_entity.services.ner import ner_extraction
+from app_telegram.services.room_reconciliation import (
+    RoomIdentitySnapshot, RoomReconciliationError,
+    reconcile_with_dependencies, ensure_message_links_available, rebase_messages,
+    mark_room_metadata_pending, room_identity_changed,
+)
 from celery.app import shared_task
 from telethon import TelegramClient, functions
 from telethon.sessions import StringSession
 from telethon.tl.types import (
     User, 
     Channel, 
+    InputChannel,
     InputPeerChannel,
     Chat, 
     ChannelParticipantAdmin, 
@@ -70,14 +84,96 @@ SLEEP_AFTER_EXCEPTION = 5
 
 # Sleep time after a number of requests to the Telegram API to avoid FloodWaitError
 SLEEP_AFTER_X_REQUESTS = 10 
+SLEEP_AFTER_EMPTY_COMMENT_PARENT = 5
+
+# Checkpoint size and Telegram parallelism are independent: six rooms need up
+# to twelve extraction operations, but at most eight run concurrently.
+SCAN_ROOMS_PER_CHECKPOINT = 6
+SCAN_MAX_CONCURRENT_OPERATIONS = 8
+
+# Telethon's message iterator fetches at most 100 messages per API page. Comments
+# use a progressive pause between pages; room-history scans keep their 250 ms
+# iterator wait.
+COMMENTS_GET_REPLIES_PAGE_SIZE = 100
+COMMENTS_PAGE_SLEEP_INITIAL_SECONDS = 1.0
+COMMENTS_PAGE_SLEEP_INCREMENT_SECONDS = 0.5
+COMMENTS_PAGE_SLEEP_MAX_SECONDS = 3.0
 
 # MAX WAIT TIME TO THE TELEGRAM API (in seconds)
 MAX_WAIT_TIME = 300 # 5 mins
 
 
+async def _fetch_room_about_if_changed(client, room, snapshot):
+    """Read the description only after a public identity/title/link change.
+
+    Run during extraction, before checkpoint writes. Failure must defer the
+    Room rather than publish a partial history entry with an unobserved about.
+    """
+    if snapshot.about_observed or not snapshot.username or not room_identity_changed(room, snapshot):
+        return snapshot
+    try:
+        response = await asyncio.wait_for(
+            client(functions.channels.GetFullChannelRequest(InputChannel(room.tg_id, room.access_hash))),
+            MAX_WAIT_TIME,
+        )
+        full_chat = getattr(response, "full_chat", None)
+        if getattr(full_chat, "id", None) != room.tg_id or not hasattr(full_chat, "about"):
+            raise RoomReconciliationError("room_about_unavailable")
+        about = full_chat.about
+        if about is not None and not isinstance(about, str):
+            raise RoomReconciliationError("room_about_unavailable")
+    except (FloodWaitError, AuthKeyError):
+        raise
+    except (ValueError, RPCError, TimeoutError, OSError) as exc:
+        raise RoomReconciliationError("room_about_unavailable") from exc
+    return replace(snapshot, about=about, about_observed=True)
+
+
+async def _fetch_room_identity(client, room):
+    entity = await asyncio.wait_for(
+        client.get_entity(InputPeerChannel(room.tg_id, room.access_hash)), MAX_WAIT_TIME,
+    )
+    snapshot = RoomIdentitySnapshot.from_entity(entity, room.tg_id)
+    if snapshot is None:
+        raise RoomReconciliationError("room_metadata_unavailable")
+    return await _fetch_room_about_if_changed(client, room, snapshot)
+
+
+def _refresh_peer_identity(room, *, runner=None, client=None, auth_id=None):
+    """Read an owner using its own credential-bound access hash."""
+    auth = room.access_auth
+    if not auth or not auth.is_valid or auth.is_hibernated or auth.wait_until > timezone.now():
+        raise RoomReconciliationError("room_owner_unavailable")
+    shared_credential = client is not None and str(auth.pk) == str(auth_id)
+
+    async def fetch():
+        if shared_credential:
+            return await _fetch_room_identity(client, room)
+        peer_client = TelegramClient(
+            StringSession(auth.session), auth.api_id, auth.api_hash,
+            receive_updates=False, flood_sleep_threshold=0,
+        )
+        try:
+            await peer_client.connect()
+            return await _fetch_room_identity(peer_client, room)
+        finally:
+            await peer_client.disconnect()
+
+    try:
+        return runner.run(fetch()) if runner is not None else async_to_sync(fetch)()
+    except (FloodWaitError, AuthKeyError) as exc:
+        if shared_credential:
+            # The scan's existing handler records the credential cooldown or
+            # invalidation after rolling back its active checkpoint.
+            raise
+        raise RoomReconciliationError("room_owner_unavailable") from exc
+    except (RPCError, ValueError, TimeoutError, OSError) as exc:
+        raise RoomReconciliationError("room_owner_unavailable") from exc
+
+
 async def sleep_on_exception(e, seconds=SLEEP_AFTER_EXCEPTION):
     """ Sleeps for a number of seconds after an exception.
-    
+
     Parameters
     ----------
     e: Exception
@@ -99,186 +195,31 @@ async def sleep_on_exception(e, seconds=SLEEP_AFTER_EXCEPTION):
 # ======================================================
 
 
-# ======================================================
-# =====      CELERY TASKS: INDEXATION MANAGER      =====
-# ======================================================
+def _create_scan_message_handoffs(messages, *, target_job_id=None, source_batch_id=None):
+    """Persist scan output for its child message Job in the current transaction.
 
-@shared_task(track_started=True, ignore_result=False)
-def items_to_index(
-    query_filter_by_model, 
-    apply_distinct = False, 
-    block_size=500000,
-    es_chunk_size=4500, 
-    thread_count=10,
-    token=None,
-):
-    """Receive a list of filters to extract RoomItem/MessageItem items and index 
-    them in the elasticsearch cluster.
-
-    Parameters
-    ----------
-    query_filter_by_model: list[dict] or dict 
-        A list of dictionaries (one from each celery task, in case of only one
-        celery tasks, the argument will be a dict) with all filters from each 
-        Model to update/create their items in their respective index. 
-        Dictionary structure:
-        ```
-        {
-            "RoomItem" : {
-                "and_filter_fields": {"pk__in": [UUID(...), ...], ...}
-                "list_filter_fields": {}
-            },
-            "MessageItem" : {
-                "and_filter_fields": {"pk__in": [UUID(...), ...], ...}
-                "list_filter_fields": {}
-            },
-        }
-        ```
-
-        If the keys "RoomItem" or "MessageItem" appear in the dictionary but empty
-        or their sub-dicts "and_filter_fields" and "list_filter_fields" are empty, it 
-        indicates that you want to index all documents without any filters. 
-        e.g: query_filter_by_model example for index all messages: 
-        ```
-        }       
-            "MessageItem" : {},
-        }
-        ```   
-        or       
-        ``` 
-        }       
-            "MessageItem" : {
-                "and_filter_fields": {}
-                "list_filter_fields": {}
-            },
-        }
-        ```
-
-        On the other hand, if the keys "RoomItem" or "MessageItem" do not appear, 
-        it implies that you do not want to index that model.
-
-    apply_distinct: boolean, default=False
-        In case the filters inside `and_filter_fields` or `list_filter_fields` contain 
-        related fields that may cause duplicates. This often happens with "related 
-        fields" with a `Many` relationship. For example, 
-        `MessageItem.objects.filter(entities__entity__name__icontains="Pedro")` 
-        returns duplicates (entities is a Many-to-Many relationship field). On the 
-        other hand, `MessageItem.objects.filter(room__tags__icontains="politic")` 
-        is safe, as it is a One-to-Many relationship accessed through a One relationship 
-        (each message has only one room).
-        NOTE: `.distinct("pk")` may significantly impact performance.
-        
-    token: string, default=None
-        UUID.hex 
-
-    block_size: int
-        The size of each block of items to be processed in memory from the DB 
-        at a time.
-
-    es_chunk_size: int
-        The size of each chunk of items to be indexed by Elasticsearch.
-        It can lead to a memory error caused by exceeding the configured heap 
-        size in our Elasticsearch cluster. e.g:
-        ```
-            ApiError(429, 'circuit_breaking_exception', 'Data too large, data for 
-            [<http_request>] would be ... which is larger than the limit of ... 
-        ```
-        In this case, reduce the concurrent requests to the cluster and/or the 
-        number of items sent.
-
-    thread_count: int
-        The number of threads to use for parallel indexing of the chunks on the 
-        Elasticsearch cluster.
+    This helper deliberately lives next to the code that inserts
+    ``MessageItem`` rows: there is no interval in which a committed message can
+    be lost between scan and its downstream workflow.  It is a no-op for the
+    direct callers of ``scan_rooms``/``scan_comments`` that do not participate
+    in a ProcessingJob.
     """
 
-    def _join_filter_dicts(list_of_dicts):
-        """
-        Joins a list of dictionaries containing nested filter fields into a single dictionary.
+    if not target_job_id or not source_batch_id or not messages:
+        return []
+    # Imported lazily to keep Telegram extraction usable without importing the
+    # scheduler during module initialisation.
+    from app_scheduler.models import ProcessingBatch, ProcessingJob
+    from app_scheduler.services.jobs import create_handoffs_locked
 
-        Parameters:
-        -----------
-        list_of_dicts : list of dict
-            A list of dictionaries to be joined. Each dictionary should have the following structure:
-            {
-                "and_filter_fields": {"pk__in": [UUID(...), ...], ...},
-                "list_filter_fields": {"data__iexact": [UUID(...), ...], ...}
-            }
-
-        Returns:
-        --------
-        dict
-            A single dictionary with combined 'and_filter_fields' and 'list_filter_fields'.
-        """
-        def merge_dicts(d1, d2):
-            for key, value in d2.items():
-                if isinstance(value, list):
-                    if key in d1:
-                        d1[key].extend(value)
-                    else:
-                        d1[key] = value.copy()
-                else:
-                    d1[key] = value
-            return d1
-
-        # Collapsed dict for filter using the app_base.api.create_advance_filter function
-        collapsed_dict = {
-            "and_filter_fields": {},
-            "list_filter_fields": {}
-        }
-        
-        for d in list_of_dicts:
-            for key in ["and_filter_fields", "list_filter_fields"]:
-                collapsed_dict[key] = merge_dicts(collapsed_dict[key], d.get(key, {}))
-        return collapsed_dict
-
-    # Normalization: In case of one group taks, the arg will be a dict instead of a list
-    if not isinstance(query_filter_by_model, list):
-        query_filter_by_model = [query_filter_by_model]
-
-    # prepare items from each celery task 
-    rooms_dicts = []
-    msgs_dicts = []
-    for dict_by_task in query_filter_by_model:
-        # Ignore empty dicts only allow dicts with RoomItem or MessageItem keys
-        if RoomItem.__name__ in dict_by_task:
-            rooms_dicts += [dict_by_task[RoomItem.__name__]]
-        if MessageItem.__name__ in dict_by_task:
-            msgs_dicts += [dict_by_task[MessageItem.__name__]] 
-    
-    room_filters = _join_filter_dicts(rooms_dicts) if rooms_dicts else None
-    msgs_filters = _join_filter_dicts(msgs_dicts) if msgs_dicts else None
-    
-    try:
-        if room_filters:   
-            update_index(
-                token,
-                RoomDocument(), 
-                **room_filters,
-                apply_distinct=apply_distinct,
-                block_size=block_size, 
-                action="index",
-                es_chunk_size=es_chunk_size, 
-                thread_count=thread_count,
-            )
-        if msgs_filters:
-            update_index(
-                token,
-                MessageDocument(), 
-                **msgs_filters,
-                apply_distinct=apply_distinct,
-                block_size=block_size, 
-                action="index",
-                es_chunk_size=es_chunk_size, 
-                thread_count=thread_count,
-            )
-
-    except Exception as e:
-        #full_traceback = traceback.format_exc()
-        logger.error(
-            f"{e.__class__.__name__}: "
-            f"An error has occurred during the elastic index update - {e}. "
-            #f"Traceback:\n{full_traceback}"
-        )
+    source_batch = ProcessingBatch.objects.select_for_update(no_key=True).get(pk=source_batch_id)
+    target_job = ProcessingJob.objects.get(pk=target_job_id)
+    return create_handoffs_locked(
+        source_batch,
+        target_job=target_job,
+        item_content_type=ContentType.objects.get_for_model(MessageItem, for_concrete_model=False),
+        item_ids=[str(message.pk) for message in messages],
+    )
 
 
 # ======================================================
@@ -525,7 +466,7 @@ def access_entities(items_pk, auth_key, model_class_name, token = None):
         return {}
 
 @shared_task(track_started=True, ignore_result=False)
-def populate_seeds(seeds_pk, auth_key, token = None):
+def populate_seeds(seeds_pk, auth_key, token = None, source_batch_id=None, lease_token=None):
     """ Extract info of each seed item using Telegrams'API and its link.
 
     This function takes each "link" from `seeds` and requests all of its information 
@@ -566,7 +507,7 @@ def populate_seeds(seeds_pk, auth_key, token = None):
     ----------
     data_dict: dict
         A dictionary with all primary keys from each Model compatible with
-        `app_telegram.services.telegram.items_to_index` to allow the connection 
+        `app_telegram.services.index.items_to_index` to allow the connection
         of these tasks in a Celery Pipeline.
     """
 
@@ -698,6 +639,7 @@ def populate_seeds(seeds_pk, auth_key, token = None):
         seconds = 0
         try:
             entity = await client.get_entity(seed.link)
+            observed_at = timezone.now()
 
             # First of all verify if the entity is valid: User or Channel
             # Avoid unhandled errors: UserEmpty, ChannelForbidden, ChatForbidden, ChatEmpty
@@ -729,6 +671,7 @@ def populate_seeds(seeds_pk, auth_key, token = None):
                 return UserItem, item, seed, 0, None
 
             elif isinstance(entity, Channel) or isinstance(entity, Chat):
+                item["_identity_observed_at"] = observed_at
                 item["link"] = seed.link
                 item["title"] = entity.title
                 item["created_at"] = entity.date
@@ -791,15 +734,79 @@ def populate_seeds(seeds_pk, auth_key, token = None):
         # Extract info from all the seeds asynchronously
         items_by_model, seeds_to_update = asyncio.run(_run_extract_tasks(seeds_to_populate, auth_key))
 
+        if source_batch_id:
+            from app_scheduler.models import ProcessingBatch
+            from app_scheduler.services.jobs import ensure_stage_lease_locked
+            from app_telegram.job_keys import TELEGRAM_POPULATE_STAGE
+            batch = ProcessingBatch.objects.select_for_update(no_key=True, of=("self",)).select_related("job").get(pk=source_batch_id)
+            ensure_stage_lease_locked(batch, stage=TELEGRAM_POPULATE_STAGE, token=lease_token)
+
         # Bulk create/update for each type
         affected_items = []
         rooms_pk = []
+        metadata_room_ids = set()
         for model_class, items_dict in items_by_model.items():
-            items, _ = model_class.bulk_create_or_update(
-                items=items_dict,
-                unique_key_name="tg_id",
-                update_fields = items_dict[0].keys()
-            )  
+            if model_class == RoomItem:
+                items = []
+                seeds_by_id = {seed.pk: seed for seed in seeds_to_update}
+                for data in items_dict:
+                    room_sync_ids = set()
+                    try:
+                        with transaction.atomic():
+                            existing = RoomItem.objects.select_for_update(nowait=True).filter(tg_id=data["tg_id"]).first()
+                            snapshot = RoomIdentitySnapshot(
+                                data["tg_id"], data["unique_name"], data["title"],
+                                data.pop("_identity_observed_at", timezone.now()),
+                                about=data["about"], about_observed=True,
+                            )
+                            if existing is not None:
+                                current, room_ids = reconcile_with_dependencies(
+                                    existing, snapshot, _refresh_peer_identity,
+                                )
+                                room_sync_ids.update(room_ids)
+                                # Identity and description share one atomic history entry.
+                                rest = {key: value for key, value in data.items() if key not in {"link", "unique_name", "title", "about", "tg_id"}}
+                                if snapshot.observed_at >= current.username_checked_at:
+                                    metadata_changed = {
+                                        key
+                                        for key in ("tags", "lang", "is_channel", "created_at")
+                                        if key in rest and getattr(current, key) != rest[key]
+                                    }
+                                    RoomItem.objects.filter(pk=current.pk).update(**rest)
+                                    for key, value in rest.items():
+                                        setattr(current, key, value)
+                                    if metadata_changed:
+                                        mark_room_metadata_pending(current, metadata_changed)
+                                        room_sync_ids.add(str(current.pk))
+                                items.append(current)
+                            else:
+                                if data["unique_name"]:
+                                    try:
+                                        data["link"] = RoomItem.build_public_link(data["unique_name"])
+                                    except ValueError as exc:
+                                        raise RoomReconciliationError("room_username_missing") from exc
+                                    owner = RoomItem.objects.filter(link=data["link"]).first()
+                                    if owner:
+                                        _, room_ids = reconcile_with_dependencies(
+                                            owner, _refresh_peer_identity(owner), _refresh_peer_identity,
+                                            force=True,
+                                        )
+                                        room_sync_ids.update(room_ids)
+                                        if RoomItem.objects.filter(link=data["link"]).exists():
+                                            raise RoomReconciliationError("room_username_conflict")
+                                new = RoomItem(**data, username_checked_at=snapshot.observed_at)
+                                RoomItem.objects.bulk_create([new])
+                                items.append(new)
+                        metadata_room_ids.update(room_sync_ids)
+                    except (RoomReconciliationError, OperationalError) as exc:
+                        if isinstance(exc, OperationalError) and getattr(exc.__cause__, "pgcode", None) != "55P03":
+                            raise
+                        seeds_by_id[data["seed_item_id"]].is_seeded = False
+                        logger.warning("Populate deferred room %s: %s", data["tg_id"], exc)
+            else:
+                items, _ = model_class.bulk_create_or_update(
+                    items=items_dict, unique_key_name="tg_id", update_fields=items_dict[0].keys(),
+                )
             affected_items += items 
             if model_class == RoomItem:
                 rooms_pk += [item.pk for item in items]
@@ -821,6 +828,10 @@ def populate_seeds(seeds_pk, auth_key, token = None):
             f"(bulk_create_or_update: {(time.time() - init_time):.3f} secs)."
         )
 
+        if metadata_room_ids:
+            from app_telegram.services.jobs import queue_room_metadata_sync
+            queue_room_metadata_sync(metadata_room_ids, source_batch_id=source_batch_id)
+
         if rooms_pk:
             return {
                 RoomItem.__name__: {"and_filter_fields": {"pk__in": rooms_pk}}
@@ -833,14 +844,34 @@ def populate_seeds(seeds_pk, auth_key, token = None):
 ####          ITERATE OVER MESSAGES             ####
 ####################################################
 
-async def extract_msgs(
+@dataclass
+class ExtractMessagesResult:
+    """An extraction attempt, including data received before a Telegram error."""
+
+    messages: list = field(default_factory=list)
+    room: RoomItem | None = None
+    parent: MessageItem | None = None
+    fetched_count: int = 0
+    completed: bool = True
+    reason: str = ""
+    error: Exception | None = None
+    room_identity: RoomIdentitySnapshot | None = None
+
+
+async def _extract_messages_result(
     client: TelegramClient, 
     room: RoomItem, 
     max_msgs: int,
     related_msg: MessageItem = None,
+    check_room=False,
 ):
-    """ Extract new messages from `room` and update the room with the new offset 
-    (if no problem occurred) or set the room as invalid (in case of a bad request).
+    """Extract at most ``max_msgs`` records using a client's event loop.
+
+    Return an ``ExtractMessagesResult`` with unsaved messages, mutated offset
+    objects, completion status, fetched-record count and any Telegram error.
+    ``related_msg`` selects a parent's comments instead of room history.
+    This function does not write to the database. Expected Telegram and timeout
+    errors retain partial results; unexpected errors and cancellation propagate.
     
     Parameters
     ----------
@@ -858,19 +889,13 @@ async def extract_msgs(
         fields. If the parameter is None, the iteration will start from `room.last_offset`.
 
     Returns
-    ----------
-    msgs_list: list[MessageItem]
-        List of new MessageItem items to be created.
-
-    room_to_update: RoomItem
-        RoomItem item to update with the new data (offset, last_update or is_valid).
-
-    related_msg_to_update: MessageItem
-        MessageItem item to update with the new data (offset, last_update or is_valid).
-        If `related_msg` ìs not None, the new messages will not affect the `room`
-        instead, the `related_msg`.  
+    -------
+    ExtractMessagesResult
+        Unsaved records and changed objects, completion/reason, received-record
+        count and any expected error. Comments do not advance the room offset.
     """
     def _choose_media_type(msg):
+        """Return the media category of a Telegram record without persistent effects."""
         if msg.media:
             if msg.web_preview or isinstance(msg.media, MessageMediaWebPage):
                 return MessageItem.WEB_PAGE
@@ -894,6 +919,8 @@ async def extract_msgs(
         return MessageItem.TEXT
 
     msg_list = []
+    result = ExtractMessagesResult(messages=msg_list)
+    last_offset = None
     try:
         # Update the `last_scan_at` field
         room.last_scan_at = timezone.now()
@@ -901,7 +928,6 @@ async def extract_msgs(
             related_msg.last_scan_at = timezone.now()
 
         input_room = InputPeerChannel(room.tg_id, room.access_hash)
-        last_offset = None
         # wait_for to avoid long waiting times (when Telegram API doesn't return the messages)
         async for msg in AsyncTimedIterable(
             iterable=client.iter_messages(
@@ -910,10 +936,12 @@ async def extract_msgs(
                 limit=max_msgs, 
                 reply_to=related_msg.msg_id if related_msg else None,
                 offset_id= related_msg.last_offset if related_msg else room.last_offset,
-                wait_time=0.250 #(sleep secs between chunks of GetHistoryRequest)
+                # Comments apply explicit progressive waits after each page;
+                # room history retains its existing 250 ms inter-page wait.
+                wait_time=0 if related_msg else 0.250
             ), 
             timeout=MAX_WAIT_TIME, 
-            sentinel=TimeoutError
+            sentinel=TimeoutError()
         ):
             
             # Check if the iteration has timed out and broken the loop
@@ -922,12 +950,21 @@ async def extract_msgs(
                     f"{TimeoutError.__name__}: In '{room.link if room else 'NOT FOUND'}'"
                     f" - TimeoutError after {MAX_WAIT_TIME}s. {len(msg_list)} messages have been extracted."
                 )
-                await sleep_on_exception(msg)
+                result.completed = False
+                result.error = msg
+                result.reason = "timeout"
                 break
+
+            if check_room and related_msg is None and result.room_identity is None:
+                snapshot = RoomIdentitySnapshot.from_entity(getattr(msg, "chat", None), room.tg_id)
+                if snapshot and snapshot.username:
+                    result.room_identity = snapshot
 
             # Ignore action message (generated by telegram app)
             if not msg.action:
                 # Remove markdown notation
+                # If this normalization changes, bump
+                # app_entity.ner_state.NER_INPUT_NORMALIZER_VERSION.
                 clean_text = markdown_to_text(msg.text)
                 # formatted text to standard ASCII
                 clean_text = convert_to_standard_text(clean_text).strip()
@@ -935,6 +972,18 @@ async def extract_msgs(
                 clean_text = re.sub(r'\n+', '\n', clean_text)
                 # Remove repeated characters like '--' or **
                 clean_text = re.sub(r'([-_=+*]){2,}', '', clean_text)
+                message_lang = (
+                    detect_lang(
+                        extract_tags(
+                            clean_text,
+                            hashtag=False,
+                            date=False,
+                            time=False,
+                            number=False,
+                        )[0]
+                    )
+                    if clean_text else ""
+                )
 
                 msg_list.append(  
                     MessageItem(
@@ -951,30 +1000,68 @@ async def extract_msgs(
                             'views': msg.views,
                             # cleaned text (the text without markdown/strange symbols)
                             'annotated_text': clean_text,
+                            # This is deliberately calculated at ingestion for
+                            # new messages. Historical rows remain null until
+                            # their next explicit NER pass, while the durable
+                            # NER owner still recomputes/validates it before
+                            # extraction.
+                            'ner_input_hash': (
+                                build_ner_input_hash(
+                                    clean_text,
+                                    message_lang,
+                                    NER_INPUT_NORMALIZER_VERSION,
+                                )
+                                if clean_text and message_lang
+                                else None
+                            ),
                             # Remove emails, urls, @mentions and emojis for lang detection.
-                            'lang': (
-                                detect_lang(
-                                    extract_tags(
-                                        clean_text, 
-                                        hashtag=False, 
-                                        date=False, 
-                                        time=False, 
-                                        number=False,
-                                    )[0] # Ignore list of matches
-                                ) 
-                                if clean_text else ""
-                            ), 
+                            'lang': message_lang,
                             'sender': msg.sender.id if msg.sender else None, 
                             'media_type': _choose_media_type(msg),
                             'is_reply': msg.is_reply,
                             'created_at': msg.date,
-                            'reply_to_id': msg.reply_to.reply_to_msg_id if msg.reply_to else None,
+                            # Story replies use MessageReplyStoryHeader, which
+                            # has story_id instead of reply_to_msg_id.  They are
+                            # not replies to a MessageItem, so leave the
+                            # message-reply relation empty.
+                            'reply_to_id': getattr(msg.reply_to, 'reply_to_msg_id', None),
                             'reply_to_msg': related_msg if related_msg else None,
                         }   
                     )
                 )   
                 # Store the last offset
                 last_offset = msg.id
+            elif related_msg:
+                # Service records consume the limit without creating comments.
+                # Advance past them, but never advance past a record whose
+                # conversion failed before it could join the persisted unit.
+                last_offset = msg.id
+            result.fetched_count += 1
+
+            # Telethon requests at most 100 messages per page. Pace comments
+            # progressively between GetReplies pages, capped at three seconds.
+            # This executes before the iterator asks Telegram for its next page.
+            if (
+                related_msg
+                and result.fetched_count % COMMENTS_GET_REPLIES_PAGE_SIZE == 0
+                and result.fetched_count < max_msgs
+            ):
+                page_number = result.fetched_count // COMMENTS_GET_REPLIES_PAGE_SIZE
+                page_sleep = min(
+                    COMMENTS_PAGE_SLEEP_INITIAL_SECONDS
+                    + (page_number - 1) * COMMENTS_PAGE_SLEEP_INCREMENT_SECONDS,
+                    COMMENTS_PAGE_SLEEP_MAX_SECONDS,
+                )
+                logger.info(
+                    "Anti-FloodWait: [SCAN COMMENTS] '%s' sleeping for %.1fs after "
+                    "GetReplies page %s (%s records) for parent %s.",
+                    room.link if room else "unknown room",
+                    page_sleep,
+                    page_number,
+                    result.fetched_count,
+                    related_msg.msg_id,
+                )
+                await asyncio.sleep(page_sleep)
     
     except ChannelPrivateError as e:
         logger.error(
@@ -984,7 +1071,8 @@ async def extract_msgs(
         # without an invite link
         room.is_private = True
         room.last_update = timezone.now()
-        return [], room, None
+        result.room = room
+        result.reason = "room_private"
     except (MsgIdInvalidError, MsgTooOldError) as e:
         # BadRequestError child exceptions related to the `related_msg` 
         # The message ID is invalid, reasons:
@@ -995,8 +1083,11 @@ async def extract_msgs(
             f"{ e.__class__.__name__ }: Message <{related_msg.msg_id if related_msg else None}> "
             f"in '{room.link}' - {e}"
         )
+        if related_msg is None:
+            raise
         related_msg.is_valid = False
-        return [], None, related_msg
+        result.parent = related_msg
+        result.reason = type(e).__name__
     except BadRequestError as e:
         logger.error(
             f"{ e.__class__.__name__ }: In '{room.link if room else 'NOT FOUND'}' - {e}"
@@ -1008,232 +1099,276 @@ async def extract_msgs(
         room.access_hash = None
         room.is_valid = False
         room.last_update = timezone.now()
-        return [], room, None
-    except FloodWaitError:
-        # Re-raise FloodWaitException (will be handled outside of this function)
-        # To avoid RPCError general exception to catch it
-        raise 
-    except AuthKeyError:
-        # The session has expired or was broken during the extraction
-        raise
+        result.room = room
+        result.reason = "room_invalid"
+    except (FloodWaitError, AuthKeyError) as e:
+        # Keep data already received; the caller commits it before deferring.
+        result.completed = False
+        result.error = e
+        result.reason = type(e).__name__
     except (ValueError, RPCError) as e:
         logger.error(
             f"{ e.__class__.__name__ }: In '{room.link if room else 'NOT FOUND'}' - {e}"
         )
-        await sleep_on_exception(e)
+        result.completed = False
+        result.error = e
+        result.reason = type(e).__name__
+
+    if check_room and related_msg is None:
+        try:
+            if result.room_identity is None and result.completed and result.error is None:
+                result.room_identity = await _fetch_room_identity(client, room)
+            if result.room_identity is None:
+                raise RoomReconciliationError("room_metadata_unavailable")
+            if not result.room_identity.username:
+                room.is_private = True
+                raise RoomReconciliationError("room_username_missing")
+            result.room_identity = await _fetch_room_about_if_changed(client, room, result.room_identity)
+            room._identity_snapshot = result.room_identity
+        except (RoomReconciliationError, ValueError, RPCError, TimeoutError, OSError) as exc:
+            if isinstance(exc, (FloodWaitError, AuthKeyError)):
+                result.error = exc
+            room._room_check_error = getattr(exc, "reason", "room_metadata_unavailable")
+            result.reason = room._room_check_error
+            result.messages.clear()
+            result.room = None
+            result.completed = False
+            return result
 
     # Only in case of new messages extracted. In case of timeout or RCPError, 
     # the function will return all message that have been already extracted until the exception.
-    if msg_list:
+    if last_offset is not None:
         # update the `last_offest` with the last msg id
         if related_msg:
             related_msg.last_offset = last_offset
             # auto_now does not trigger on bulk_update(), whereupon, manually 
             related_msg.last_offset_update = timezone.now()
-            return msg_list, None, related_msg
+            result.parent = related_msg
         else:
             room.last_offset = last_offset
             # auto_now does not trigger on bulk_update(), whereupon, manually 
             room.last_offset_update = timezone.now()
             room.last_update = timezone.now() 
-            return msg_list, room, None
-    return [], None, None
+            result.room = room
+    # A normal scan that finds no new messages is still a completed room
+    # operation.  Persist ``last_scan_at`` so durable Scan batches can report
+    # it as processed rather than incorrectly deferred.  Timeout/RPC paths
+    # deliberately leave it untouched, preserving their partial/deferred
+    # semantics for the next run.
+    if result.completed and not result.reason:
+        if related_msg:
+            # A valid empty response means there are currently no newer
+            # comments. Keep is_valid=True so future executions can scan it.
+            result.parent = related_msg
+        else:
+            result.room = room
+    return result
+
+
+async def extract_msgs(client: TelegramClient, room: RoomItem, max_msgs: int, related_msg=None, check_room=False):
+    """Adapt structured extraction to the existing ``(messages, room, parent)`` API.
+
+    Parameters select room history or one parent's comments. Return unsaved
+    messages and changed offset objects; persist nothing. FloodWait/AuthKey
+    errors propagate to existing room-scan consumers, while transient errors
+    retain fetched records and the existing exception delay.
+    """
+    result = await _extract_messages_result(client, room, max_msgs, related_msg, check_room=check_room)
+    if isinstance(result.error, (FloodWaitError, AuthKeyError)):
+        raise result.error
+    if result.error is not None:
+        await sleep_on_exception(result.error)
+    return result.messages, result.room, result.parent
 
 
 @shared_task(track_started=True, ignore_result=False)
-def scan_rooms(rooms_pk, auth_key, max_msgs = 2500, update_existing_users = False, token = None):
-    """ Extract info of each room: messages or users/user_bots (in groups)
+def scan_rooms(
+    rooms_pk,
+    auth_key,
+    max_msgs=2500,
+    update_existing_users=False,
+    token=None,
+    processing_handoff_target_job_id=None,
+    source_batch_id=None,
+    lease_token=None,
+    rooms_per_checkpoint=SCAN_ROOMS_PER_CHECKPOINT,
+    max_concurrent_operations=SCAN_MAX_CONCURRENT_OPERATIONS,
+    check_room=False,
+):
+    """Extract messages and users/user_bots (in groups) from each room.
 
-    ----
-    This function receives a list of primary keys of rooms instead of all
-    the object's data because this date will be extracted here after a 
-    'select_for_update' call inside a transaction, protecting the consistency 
-    of data from possible race conditions.
+    This function receives room primary keys instead of preloaded objects so
+    each round can read and lock its RoomItems with select_for_update inside
+    its own transaction, protecting the data from concurrent scans.
+
+    Each transaction commits messages, offsets, users, relationships, handoffs
+    and Batch progress together. A failure rolls back only the active round;
+    earlier rounds remain committed. One Telegram client serves all rounds.
 
     TODO: (Future) Extract videos and images
-
-    ----
 
     Parameters
     ----------
     rooms_pk: list[uuid.UUID]
-        List of primary keys from RoomItems.
-        NOTE: This rows will be blocked (inside a transaction) during the process
-        to avoid falling into possible race conditions.
+        List of primary keys from RoomItems. Duplicate IDs are removed.
+        NOTE: Only the current round's rows are locked during extraction and
+        persistence. Locks are released when that round commits or rolls back.
+        For a scheduler Batch, rooms with recorded outcomes are not rescanned.
 
     auth_key: dict
-        Dict with the credentials info to login into Telegram API. Required Data:
-        ```
+        Dictionary with the credentials to log into the Telegram API:
         {
-            pk: UUID(...)
-            name: '...'
-            api_id: 123XXXX
-            api_hash: "..."
-            session: "....."
+            "pk": UUID(...),
+            "name": "...",
+            "api_id": 123XXXX,
+            "api_hash": "...",
+            "session": "...",
         }
-        ```
 
     max_msgs: int, default=2500
-        Max number of messages they will be extracted for each room. 
+        Maximum number of messages to extract from each room in this scan.
 
-    update_existing_users: bool, default=True
+    update_existing_users: bool, default=False
         Update already existing users from the extracted ones.
 
-    token: string, default=None
-        Query token to add a relation with the extracted items (Users/Messages)
+    token: str, default=None
+        Query token to relate the extracted users and messages to a Query.
+
+    processing_handoff_target_job_id: uuid.UUID, default=None
+        Downstream Job that receives handoffs for newly stored messages.
+
+    source_batch_id: uuid.UUID, default=None
+        Scheduler Batch whose room progress is saved with each checkpoint.
+        When supplied, each scanned room must belong to that Batch's item_ids
+        and the caller must not have an enclosing database transaction.
+
+    lease_token: str, default=None
+        Execution token for the scheduler Batch. Checked before extraction and
+        again before saving so a replaced execution cannot commit stale data.
+
+    rooms_per_checkpoint: int, default=SCAN_ROOMS_PER_CHECKPOINT (6)
+        Maximum number of rooms in one independently committed round.
+        Must be positive. This controls persistence frequency, not concurrency.
+
+    max_concurrent_operations: int, default=SCAN_MAX_CONCURRENT_OPERATIONS (8)
+        Maximum simultaneous message/member extraction operations.
+        Each room schedules one operation for messages and one for members;
+        each operation may make multiple Telegram requests while paginating.
+        Must be positive. This limit is independent of checkpoint size.
 
     Returns
-    ----------
-    message_pks: List[uuid.UUID]
-        List of primary keys of the new MessageItem items.
+    -------
+    message_pks: list[uuid.UUID]
+        Primary keys of new MessageItems committed during this invocation.
+        Previously committed messages from earlier attempts are not included.
+
+    Notes
+    -----
+    FloodWait and authentication errors propagate to the task handler after
+    the active round rolls back. Previously committed rounds remain stored
+    even though this invocation raises instead of returning their IDs.
+    The scheduler uses durable Batch progress to retry only pending rooms.
     """
+    from app_scheduler.models import ProcessingBatch
+    from app_scheduler.services.jobs import ensure_stage_lease_locked, refresh_processing_job
+    from app_telegram.services.jobs import (
+        TELEGRAM_SCAN_STAGE, pending_scan_room_ids,
+        scan_rooms_batch_counts, scan_rooms_stage_summary,
+    )
 
-    async def _run_extract_tasks(
-        rooms, 
-        auth_key,
-        max_msgs = 2500, 
-        update_existing_users = True,
-        batch_size = 8
-    ):
-        """ To launch a task by each room and type of action
-        
-        NOTE: (Using access_hash is less common to have a FloodWaitError)
-        
-        Unlike populate pipeline, here the FloodWaitError/AuthKeyError is handled 
-        outside the coroutines. This leads to a loss of information (e.g: with 6 
-        coroutines, if the error occurs in the last one we will lose the data of
-        all of them). 
+    if rooms_per_checkpoint < 1 or max_concurrent_operations < 1:
+        raise ValueError("Room checkpoint size and operation concurrency must be positive")
+    if source_batch_id and transaction.get_connection().in_atomic_block:
+        raise RuntimeError("Durable room checkpoints require no enclosing database transaction")
+    room_ids = list(dict.fromkeys(map(str, rooms_pk)))
+    if not room_ids:
+        return []
 
-        However, losing a couple of messages is not very expensive and allows to 
-        have a simpler code than handling the error.
+    async def _open_client():
+        client = TelegramClient(
+            StringSession(auth_key.get("session", "")),
+            auth_key.get("api_id", 0), auth_key.get("api_hash", ""),
+        )
+        try:
+            await client.__aenter__()
+            await client.start()
+        except BaseException:
+            try:
+                await client.__aexit__(*sys.exc_info())
+            except BaseException:
+                logger.exception("Telegram client cleanup failed during room scan startup")
+            raise
+        return client
+
+    async def _run_extract_tasks(client, rooms):
+        """Extract messages and members for one round without saving results.
 
         Parameters
         ----------
-        rooms: List[app_telegram.RoomItem]
-            List of RoomItem items that are going to be scanned
-
-        auth_key: dict
-            Dictionary with the credentials to init a Telegram client. It contains
-            the following data: "pk", "session", "api_id" and "api_hash".
-
-        max_msgs: int, default=2500
-            Max number of messages they will be extracted for each room. 
-
-        update_existing_users: bool, default=True
-            Update already existing users from the extracted ones.
-
-        batch_size: int, default=8
-            Max number of requests to be made asynchronously over the Telegram API. 
-            It is advisable not to exceed this number to avoid early rate limits.
-
-            Must be >= 2.
-
-            NOTE: This function calls the Telgram API to get two types of information: 
-            users and messages. So the bach_size will be split 
-            (e.g. batch_size=6 => 3 asynchronous requests for users and 3 for messages).            
+        client: TelegramClient
+            Connected client shared by all rounds on the same event loop.
+        rooms: list[RoomItem]
+            Current round's rooms, already locked by the caller's transaction.
 
         Returns
-        ----------
-        msgs_list: list[list[MessageItem]]
-            List of list with MessageItem elements, to insert create **new** messages 
-            into the platform.
-            NOTE: Some nested list can be empty '[]'
+        -------
+        msg_results: list[tuple]
+            One (messages, updated_room, related_parent) result per room, in
+            input order. Messages are unsaved MessageItems; related_parent is
+            unused for room history. updated_room can be None.
+        member_results: list[tuple]
+            One (users, new_users_by_room) result per room, in input order.
+            Users are dictionaries and may repeat across rooms.
+            new_users_by_room maps RoomItem primary keys to new member tg_ids.
 
-        rooms_to_update: list[dict]
-            List of RoomItem items which last_offset and last_updated fields must be
-            updated. Each dictionary
-            contains the following data:
-
-        users_dicts: list[list[dict]]
-            List of list with dictionaries with the UserItem structure, to insert
-            or update user items.
-            NOTE: Some nested list can be empty '[]'. **MAY CONTAIN DUPLICATES**
-
-        new_users_id_by_room_pk: list[dict]
-            List of dictionaries to create new relationships between UserItems and
-            RoomItems. Each dictionary contains the following data:
-            {
-                # RoomItem.pk: List of new users tg_id values to relate with the Room
-                'RoomItem.pk': users_id 
-            }
-            NOTE: Some dicts can be empty '{}'
+        Notes
+        -----
+        Schedules two extraction operations per room, with at most
+        max_concurrent_operations active at once. A six-room round schedules
+        twelve operations; the default limit lets eight run concurrently.
+        A failure cancels and settles sibling operations before propagating
+        to the caller, which rolls back the current round's transaction.
         """
+        semaphore = asyncio.Semaphore(max_concurrent_operations)
+
+        async def extract_messages(room):
+            async with semaphore:
+                if check_room:
+                    return await extract_msgs(client, room, max_msgs, check_room=True)
+                return await extract_msgs(client, room, max_msgs)
+
+        async def extract_members(room):
+            async with semaphore:
+                return await _extract_members(client, room, auth_key.get("pk"), update_existing_users)
+
+        tasks = [asyncio.create_task(extract_messages(room)) for room in rooms]
+        tasks += [asyncio.create_task(extract_members(room)) for room in rooms]
         try:
-            async with TelegramClient(
-                StringSession(auth_key.get("session", "")), 
-                auth_key.get("api_id", 0), 
-                auth_key.get("api_hash", "")
-            ) as client:
-                
-                await client.start()
+            results = await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        return results[:len(rooms)], results[len(rooms):]
 
-                msgs_res = []
-                members_res = []
-                sleep_counter = 0 # To avoid FloodWaitError
-                # Max number of requests at a time = batch_size (batch_size/2 for each call)
-                batch_size_per_action = int(batch_size/2)
-                for i in range(0, len(rooms), batch_size_per_action):
+    def _extract_round(runner, client, rooms):
+        # A Celery soft timeout can interrupt Runner.run outside the coroutine.
+        # Keep its task so we can cancel/settle it before closing the client.
+        task = runner.get_loop().create_task(_run_extract_tasks(client, rooms))
 
-                    try:
-                        # Extract new msgs, users, rooms with new offset and users_id by room to relate
-                        aux_msgs_res, aux_members_res = await asyncio.gather(
-                            asyncio.gather(
-                                *[extract_msgs(client, room, max_msgs) 
-                                for room in rooms[i:i+batch_size_per_action]
-                                ]
-                            ),
-                            asyncio.gather(
-                                *[_extract_members(client, room, auth_key.get('pk'), update_existing_users) 
-                                for room in rooms[i:i+batch_size_per_action]
-                                ]
-                            )
-                        )
-                        msgs_res += [res[:-1] for res in aux_msgs_res] # Ignore `related_msg` (not used)
-                        members_res += aux_members_res
+        async def await_result():
+            return await task
 
-                        sleep_counter += 1
-                        # Sleep for 10secs (each 60 rooms) in order to avoid rate limits/bans
-                        if sleep_counter == 60/batch_size_per_action:
-                            logger.debug(
-                                f"Anti-FloodWait: [SCAN] '{auth_key.get('name', 'NOT FOUND!')}' sleeping for {SLEEP_AFTER_X_REQUESTS}s)"
-                            )
-                            sleep_counter = 0
-                            await asyncio.sleep(SLEEP_AFTER_X_REQUESTS)
-                            
-                    except FloodWaitError as e:
-                        # Stop scanning...
-                        # Handling FloodWaitError here is simple but some information 
-                        # can be discarded (the other sibling coroutines that did not 
-                        # trigger a rate limit, max 2 corutines info -> Fair enought)
-                        if e.seconds <= 1800:
-                            logger.info(
-                                f"{ e.__class__.__name__ }: [SCAN] Less than 1800secs, sleeping {e.seconds:.3f}secs."
-                            )
-                            # If FloodWait is less than half and hour it will wait (instead of stop)
-                            await asyncio.sleep(e.seconds)
-                        else:
-                            # Wait time to the Telegram Api Key
-                            wait_until = timezone.now() + timezone.timedelta(seconds=e.seconds)
-                            # NOTE: Use 'aupdate' version inside async function
-                            await TelegramAuth.objects.filter(
-                                pk=auth_key.get('pk')
-                            ).aupdate(wait_until=wait_until)
-                            logger.info(
-                                f"{e.__class__.__name__}: [SCAN] Stopping... Auth '{auth_key.get('name')}' have to sleep until '{wait_until}'."
-                            )
-                            break
-            
-                # msgs_list rooms_to_update, users_dicts, new_users_id_by_room_pk
-                return zip(*msgs_res), zip(*members_res)
-        except (ValueError, RuntimeError, AuthKeyError, EOFError) as e:
-            # Problem with this auth item, set 'is_valid' to false
-            # NOTE: Use 'aupdate' version inside async function
-            await TelegramAuth.objects.filter(pk=auth_key.get('pk')).aupdate(is_valid=False)
-            logger.error(
-                f"{e.__class__.__name__ }: Error in auth '{auth_key.get('name', 'NOT FOUND!')}' "
-                f"- {e}"
-            )
-            return ([], []), ([], [])
+        async def settle():
+            await asyncio.gather(task, return_exceptions=True)
+
+        try:
+            return runner.run(await_result())
+        except BaseException:
+            task.cancel()
+            runner.run(settle())
+            raise
 
     async def _extract_members(
         client:TelegramClient, 
@@ -1315,467 +1450,561 @@ def scan_rooms(rooms_pk, auth_key, max_msgs = 2500, update_existing_users = Fals
                 return users, {room.pk: users_tgid} if users_tgid else {}
         return [], {}
 
-    try:
-        # Start a transaction to avoid race conditions:
-        # f.e: run the scanning more than once at the same time extracting the same
-        # data (wasting time and creating unnecessary timeouts).
-        with transaction.atomic():
-            # Rooms which are going to be blocked and used to extract users and msgs
-            rooms_to_scan = list(
-                RoomItem.objects.filter(pk__in=rooms_pk)
-                .select_for_update(skip_locked=True)
-                # To be able to extract members tg_id from each Room without more hits 
-                # in the database O(2) 
-                .prefetch_related(
-                    Prefetch('members', queryset=UserItem.objects.all().only('tg_id'))
-                ) 
-            )
+    def _persist_round(msg_results, member_results, rooms, runner, client):
+        """Write one round's messages, offsets, users, relations and handoffs.
 
-            if rooms_to_scan:
-                (msgs_list, rooms_to_update), (users_dict, new_users_id_by_room_pk) = asyncio.run(
-                    _run_extract_tasks(rooms_to_scan, auth_key, max_msgs, update_existing_users)
-                )
-
-                # NOTE: Using generator to avoid an extra loops (the loop to create the
-                # items + the loop inside the bulk methods to iterate them)
-
-                # Create new msgs
-                init_time = time.time()
-                messages_created = MessageItem.objects.bulk_create(
-                    iterchain.from_iterable(msgs_list),
-                    batch_size=settings.BULK_BATCH_SIZE
-                )
-                logger.info(
-                    f"{len(messages_created)} MessageItem items were created "
-                    f"(bulk_create: {(time.time() - init_time):.3f} secs)."
-                )
-
-                # Bulk Update offsets from scanned rooms with new messages
-                rooms_to_update = [room for room in rooms_to_update if room] # Remove Nones
-                RoomItem.objects.bulk_update(
-                    rooms_to_update,
-                    ['last_offset', 'last_offset_update', 'last_update', 'last_scan_at', 'is_private', 'is_valid'],
-                    batch_size=settings.BULK_BATCH_SIZE
-                )
-
-                # Remove users dupicates (same users in different rooms)
-                seen_user_tg_id = set()
-                unique_users = []
-                for user in iterchain.from_iterable(users_dict):
-                    if user["tg_id"] not in seen_user_tg_id:
-                        unique_users.append(user)
-                        seen_user_tg_id.add(user["tg_id"])
-                # Create or update Users.
-                init_time = time.time()
-                affected_users,_ = UserItem.bulk_create_or_update(
-                    items=unique_users,
-                    unique_key_name="tg_id",
-                ) 
-                logger.info(
-                    f"{len(affected_users)} UserItem items were created/updated "
-                    f"(bulk_create_or_update: {(time.time() - init_time):.3f} secs)."
-                )
-                affected_users_tgid_to_pk = {user.tg_id:user.pk for user in affected_users}
-                # Create **new** relations between UserItems and RoomItems
-                bulk_add_generic_relationships(
-                    UserItem,
-                    'rooms',
-                    RoomItem,
-                    # Dict with Room's pk as keys and a list of **new** users pk as values
-                    {
-                        room_pk: [
-                            affected_users_tgid_to_pk[user_id] 
-                            for user_id in users
-                        ]
-                        for room_pk, users in ChainMap(*new_users_id_by_room_pk).items()
-                    },
-                )
-
-                # Bind the Query to all the Msgs/Users involved. Rooms are related with 
-                # the Query in app_telegram.services.api.scan())
-                if token:
-                    bulk_add_query_relationships(messages_created + affected_users, token)
-                
-                # Return will be recieved by postprocess_msgs in the pipeline
-                # (there is a celery chain)
-                return [msg.pk for msg in messages_created]
-    except IntegrityError as e:
-        logger.error(
-            f"{ e.__class__.__name__ }: {e}"
-        )    
-    return []
-
-@shared_task(track_started=True, ignore_result=False)
-def scan_comments(rooms_pk, auth_key, message_filters = {}, max_msgs = 2500, total_msgs = 1250000, token = None):
-    """ Extract replies from all messages in each room. This pipeline is designed
-    only for **channels**, not for groups. Telegram hides the replies of a message
-    in a channel, so, this pipeline will extract them. 
-    
-    However, in groups all messages are extracted together (whether they are replies 
-    or not) and it is not recommended to call this pipeline as this could lead to a 
-    consistency problem (e.g. extracting duplicate messages).
-
-    ----
-
-    This function receives a list of primary keys of rooms instead of all
-    the object's data because this date will be extracted here after a 
-    'select_for_update' call inside a transaction, protecting the consistency 
-    of data from possible race conditions.
-
-    ----
-
-    Parameters
-    ----------
-    rooms_pk: list[uuid.UUID]
-        List of primary keys from RoomItems (Recommended only rooms with `is_channel=True`)
-        NOTE: This rows will be blocked (inside a transaction) during the process
-        to avoid falling into possible race conditions.
-
-    auth_key: dict
-        Dict with the credentials info to login into Telegram API. Required Data:
-        ```
-        {
-            pk: UUID(...)
-            name: '...'
-            api_id: 123XXXX
-            api_hash: "..."
-            session: "....."
-        }
-        ``` 
-    
-    message_filters: dict, default={}
-        Allows to apply filters to which messages are going to be scanned to get their replies. 
-        This parameters must be an empty dict or a dictionary with the following structure:
-        ```
-        {
-            "and_filter_fields": {},
-            "list_filter_fields": {}
-        }
-        ```
-
-    max_msgs: int, default=2500
-        Max number of replies to be extracted for each message.
-
-    total_msgs: int, default=1250000
-        Total number of messages to be extracted globally. In order to avoid an 
-        out-of-control usage of resources.
-
-    token: string, default=None
-        Query token to add a relation with the extracted items (Users/Messages)
-
-    Returns
-    ----------
-    message_pks: List[uuid.UUID]
-        List of primary keys of the new MessageItem items.
-    """
-
-    async def _run_extract_tasks(
-        rooms, 
-        auth_key,
-        max_msgs = 2500, 
-        total_msgs = 1250000,
-        batch_size = 8,
-    ):
-        """ To launch a task by each room and type of action
-        
-        NOTE: (Using access_hash is less common to have a FloodWaitError)
-        
-        Unlike populate pipeline, here the FloodWaitError/AuthKeyError is handled 
-        outside the coroutines. This leads to a loss of information (e.g: with 6 
-        coroutines, if the error occurs in the last one we will lose the data of
-        all of them). 
-
-        However, losing a couple of messages is not very expensive and allows to 
-        have a simpler code than handling the error.
-
-        Parameters
-        ----------
-        rooms: List[app_telegram.RoomItem]
-            List of RoomItem items that are going to be scanned
-
-        auth_key: dict
-            Dictionary with the credentials to init a Telegram client. It contains
-            the following data: "pk", "session", "api_id" and "api_hash".
-
-        max_msgs: int, default=2500
-            Max number of replies to be extracted for each message.
-
-        total_msgs: int, default=1250000
-            Total number of messages to be extracted globally. In order to avoid an 
-            out-of-control usage of resources
-
-        batch_size: int, default=8
-            Max number of requests to be made asynchronously over the Telegram API. 
-            It is advisable not to exceed this number to avoid early rate limits.
-
-            Must be >= 2.
-
-            NOTE: This function calls the Telgram API to get two types of information: 
-            users and messages. So the bach_size will be split 
-            (e.g. batch_size=6 => 3 asynchronous requests for users and 3 for messages).            
-
-        Returns
-        ----------
-        msgs_list: list[list[MessageItem]]
-            List of list with MessageItem elements, to insert create **new** messages 
-            into the platform.
-            NOTE: Some nested list can be empty '[]'
-
-        rooms_to_update: list[dict]
-            List of RoomItem items which last_offset and last_updated fields must be
-            updated. Each dictionary
-            contains the following data:
+        The caller opens transaction.atomic before acquiring room locks and
+        calls this function inside it. Returning does not commit: the caller
+        still saves Batch progress before exiting that same transaction.
         """
-        try:
-            async with TelegramClient(
-                StringSession(auth_key.get("session", "")), 
-                auth_key.get("api_id", 0), 
-                auth_key.get("api_hash", "")
-            ) as client:
-                
-                await client.start()
+        messages_created, rooms_to_update, accepted_members, deferred = [], [], [], {}
+        metadata_room_ids = set()
 
-                msgs_res = []
-                sleep_counter = 0 # To avoid FloodWaitError
-                total_msgs_by_room = total_msgs // len(rooms)
-                for i in range(0, len(rooms), batch_size):
+        def refresh_peer(peer):
+            return _refresh_peer_identity(peer, runner=runner, client=client, auth_id=auth_key.get("pk"))
 
-                    try:
-                        # Extract new msgs, updated rooms and related_msgs with new offsets 
-                        aux_msgs_res = await asyncio.gather(
-                            *[_iterate_messages(client, room, max_msgs, total_msgs_by_room) 
-                            for room in rooms[i:i+batch_size]
-                            ]
+        for room, result, members in zip(rooms, msg_results, member_results):
+            messages, updated_room, _ = result
+            if updated_room is None:
+                deferred[str(room.pk)] = getattr(room, "_room_check_error", "room_not_updated")
+                if room.is_private:
+                    RoomItem.objects.filter(pk=room.pk).update(is_private=True)
+                continue
+            try:
+                with transaction.atomic():
+                    room_sync_ids = {str(room.pk)} if room.metadata_sync_pending_at else set()
+                    if check_room and hasattr(room, "_identity_snapshot"):
+                        current, room_ids = reconcile_with_dependencies(
+                            room, room._identity_snapshot, refresh_peer,
                         )
-                        msgs_res += aux_msgs_res
-
-                        sleep_counter += 1
-                        # Sleep for 10secs (each 60 rooms) in order to avoid rate limits/bans
-                        if sleep_counter == 60/batch_size:
-                            logger.debug(
-                                f"Anti-FloodWait: [SCAN] '{auth_key.get('name', 'NOT FOUND!')}' sleeping for {SLEEP_AFTER_X_REQUESTS}s)"
-                            )
-                            sleep_counter = 0
-                            await asyncio.sleep(SLEEP_AFTER_X_REQUESTS)
-                            
-                    except FloodWaitError as e:
-                        # Stop scanning...
-                        # Handling FloodWaitError here is simple but some information 
-                        # can be discarded (the other sibling coroutines that did not 
-                        # trigger a rate limit, max 2 corutines info -> Fair enought)
-                        if e.seconds <= 1800:
-                            logger.info(
-                                f"{ e.__class__.__name__ }: [SCAN] Less than 1800secs, sleeping {e.seconds:.3f}secs."
-                            )
-                            # If FloodWait is less than half and hour it will wait (instead of stop)
-                            await asyncio.sleep(e.seconds)
-                        else:
-                            # Wait time to the Telegram Api Key
-                            wait_until = timezone.now() + timezone.timedelta(seconds=e.seconds)
-                            # NOTE: Use 'aupdate' version inside async function
-                            await TelegramAuth.objects.filter(
-                                pk=auth_key.get('pk')
-                            ).aupdate(wait_until=wait_until)
-                            logger.info(
-                                f"{e.__class__.__name__}: [SCAN] Stopping... Auth '{auth_key.get('name')}' have to sleep until '{wait_until}'."
-                            )
-                            break
-            
-                # msgs_list rooms_to_update
-                return zip(*msgs_res)
-        except (ValueError, RuntimeError, AuthKeyError, EOFError) as e:
-            # Problem with this auth item, set 'is_valid' to false
-            # NOTE: Use 'aupdate' version inside async function
-            await TelegramAuth.objects.filter(pk=auth_key.get('pk')).aupdate(is_valid=False)
-            logger.error(
-                f"{e.__class__.__name__ }: Error in auth '{auth_key.get('name', 'NOT FOUND!')}' "
-                f"- {e}"
+                        room_sync_ids.update(room_ids)
+                        room.link, room.unique_name = current.link, current.unique_name
+                    rebase_messages(messages, room.link)
+                    room_sync_ids.update(ensure_message_links_available(
+                        messages, refresh_peer if check_room else None,
+                    ))
+                    created = MessageItem.objects.bulk_create(messages, batch_size=settings.BULK_BATCH_SIZE)
+            except (RoomReconciliationError, OperationalError, IntegrityError) as exc:
+                if isinstance(exc, OperationalError) and getattr(exc.__cause__, "pgcode", None) != "55P03":
+                    raise
+                if isinstance(exc, IntegrityError) and "link" not in (getattr(getattr(exc.__cause__, "diag", None), "constraint_name", "") or ""):
+                    raise
+                deferred[str(room.pk)] = getattr(exc, "reason", "room_reconciliation_locked" if isinstance(exc, OperationalError) else "message_link_conflict")
+                logger.warning("Room %s deferred: %s", room.tg_id, deferred[str(room.pk)])
+                continue
+            metadata_room_ids.update(room_sync_ids)
+            messages_created.extend(created)
+            rooms_to_update.append(updated_room)
+            accepted_members.append(members)
+        RoomItem.objects.bulk_update(
+            rooms_to_update,
+            ["last_offset", "last_offset_update", "last_update", "last_scan_at", "is_private", "is_valid"],
+            batch_size=settings.BULK_BATCH_SIZE,
+        )
+        unique_users = {}
+        for users, _ in accepted_members:
+            for user in users:
+                unique_users.setdefault(user["tg_id"], user)
+        affected_users = []
+        if unique_users:
+            affected_users, _ = UserItem.bulk_create_or_update(
+                items=list(unique_users.values()), unique_key_name="tg_id",
             )
-            return ([], [])
-        
-    async def _iterate_messages(
-        client: TelegramClient,
-        room: RoomItem, 
-        max_msgs: int,
-        total_msgs: int,
-    ):
-        """ Iterate all messages from `room` and extract new replies from them.
-        NOTE: This pipeline is designed only for channels, not for groups. Telegram
-        hides the replies of a message in a channel, so, this pipeline will extract
-        them.
-        
-        Parameters
-        ----------
-        client: TelegramClient
-            TelegramClient object to use to extract the messages.
-
-        room: RoomItem
-            RoomItem item to extract the new messages from.
-        
-        max_msgs: int
-            Max number of replies to be extracted for each message.
-
-        total_msgs: int
-            Total number of messages to be extracted for this room. In order to avoid an 
-            out-of-control usage of resources.
-
-        Returns
-        ----------
-        msgs_list: list[MessageItem]
-            List of new MessageItem items to be created.
-
-        room_to_update: RoomItem
-            RoomItem item to update. None if the room wasn't updated.
-
-        related_msg_to_update: list[MessageItem]
-            MessageItem item to update (last_offset, last_offset_update, last_scan_at and is_valid).
-        """
-
-        new_msgs = []
-        edited_related_msgs = []
-        updated_room = None
-        for message in room.prefetch_msgs:
-            msgs, updated_room, updated_message  = await extract_msgs(
-                client=client,
-                room=room,
-                max_msgs=max_msgs,
-                related_msg=message,
+        users_by_tg_id = {user.tg_id: user.pk for user in affected_users}
+        new_members = dict(ChainMap(*(result[1] for result in accepted_members)))
+        if new_members:
+            bulk_add_generic_relationships(
+                UserItem, "rooms", RoomItem,
+                {room_pk: [users_by_tg_id[user_id] for user_id in users]
+                 for room_pk, users in new_members.items()},
             )
-            new_msgs += msgs
-            edited_related_msgs.append(updated_message)
+        if token and (messages_created or affected_users):
+            bulk_add_query_relationships(messages_created + affected_users, token)
+        _create_scan_message_handoffs(
+            messages_created, target_job_id=processing_handoff_target_job_id,
+            source_batch_id=source_batch_id,
+        )
+        if metadata_room_ids:
+            from app_telegram.services.jobs import queue_room_metadata_sync
+            queue_room_metadata_sync(metadata_room_ids, source_batch_id=source_batch_id)
+        return messages_created, rooms_to_update, deferred
 
-            if len(edited_related_msgs) >= total_msgs:
-                logger.info(
-                    f"Stopping iteration of replies in '{room.link}' - total msgs for this room reached ({total_msgs})."
-                )
-                break
-
-            if updated_room and (updated_room.is_private or not updated_room.is_valid):
-                # If the room can't be accessed, stop the iteration of replies
-                logger.error(
-                    f"Stopping iteration of replies in '{room.link}' - room is private or not valid."
-                )
-                break
-
-        return new_msgs, updated_room, edited_related_msgs
-
+    committed_ids = []
+    rooms_since_sleep = 0
     try:
-        # Start a transaction to avoid race conditions:
-        # f.e: run the scanning more than once at the same time extracting the same
-        # data (wasting time and creating unnecessary timeouts).
-        with transaction.atomic():
-
-            # Prepare the prefetch query to get the messages
-            prefetch_msg_qs = MessageItem.objects.defer("text", "annotated_text", "media_type")
-            if message_filters:
-                prefetch_msg_qs = prefetch_msg_qs.filter(create_advance_filter(**message_filters))
-
-            # Rooms which are going to be blocked and used to extract users and msgs
-            rooms_to_scan = list(
-                RoomItem.objects.filter(pk__in=rooms_pk)
-                .select_for_update(skip_locked=True)
-                .prefetch_related(
-                    Prefetch(
-                        "messages", 
-                        # Ignore heavy fields (that are not going to be used)
-                        queryset=prefetch_msg_qs,
-                        to_attr='prefetch_msgs'
+        # Runner keeps one event loop for the shared Telegram client across all rounds.
+        # It bridges async extraction and sync DB commits without reconnecting per round.
+        with asyncio.Runner() as runner:
+            client = None
+            @retry_on_deadlock
+            def process_room_round(round_ids):
+                nonlocal client
+                with transaction.atomic():
+                    batch = None
+                    if source_batch_id:
+                        # Check this attempt's token and inputs before API
+                        # work. Pausing stops before starting another round.
+                        batch = ProcessingBatch.objects.select_related("job").get(pk=source_batch_id)
+                        ensure_stage_lease_locked(batch, stage=TELEGRAM_SCAN_STAGE, token=lease_token)
+                        if not set(round_ids).issubset(map(str, batch.item_ids)):
+                            raise ValueError("Scan rooms must be explicit Batch inputs")
+                        if batch.job.status == JobStatus.PAUSED:
+                            return None
+                        pending = set(pending_scan_room_ids(batch))
+                        round_ids = [room_id for room_id in round_ids if room_id in pending]
+                    if not round_ids:
+                        return [], 0, 0
+                    # Only this round's rooms stay locked during extraction.
+                    # Acquire the Batch lock after Telegram so pause/recovery
+                    # can replace the lease while API work is in progress.
+                    rooms = list(
+                        RoomItem.objects.filter(pk__in=round_ids)
+                        .select_for_update(skip_locked=True, of=("self",))
+                        .order_by("pk")
+                        .prefetch_related(Prefetch("members", queryset=UserItem.objects.all().only("tg_id")))
                     )
-                ) 
-                .only(
-                    "pk",
-                    "tg_id",
-                    "link",
-                    "last_offset",
-                    "last_update",
-                    "is_private",
-                    "access_auth",
-                    "access_hash",
-                    "is_valid",
-                )
+                    changed_credentials = {
+                        str(room.pk) for room in rooms
+                        if source_batch_id and str(room.access_auth_id) != str(auth_key.get("pk"))
+                    }
+                    rooms = [room for room in rooms if str(room.pk) not in changed_credentials]
+                    # 3. Fetch this round's results into memory. Reuse the
+                    # connection opened by the first nonempty round.
+                    if rooms:
+                        if client is None:
+                            client = runner.run(_open_client())
+                        msg_results, member_results = _extract_round(runner, client, rooms)
+                    else:
+                        msg_results, member_results = [], []
+                    # 4. Lock the Batch and recheck the token before any
+                    # writes: recovery may have replaced this attempt
+                    # while Telegram requests were in progress.
+                    if batch is not None:
+                        batch = (
+                            ProcessingBatch.objects.select_for_update(no_key=True, of=("self",))
+                            .select_related("job").get(pk=source_batch_id)
+                        )
+                        ensure_stage_lease_locked(batch, stage=TELEGRAM_SCAN_STAGE, token=lease_token)
+                    # 5. Write data, then record each room's outcome in the
+                    # SAME transaction. Neither can commit independently.
+                    messages_created, rooms_updated, deferred = _persist_round(
+                        msg_results, member_results, rooms, runner, client,
+                    )
+                    if batch is not None:
+                        metadata = dict(batch.processor_metadata or {})
+                        progress = dict(metadata.get("room_progress", {}))
+                        scanned_ids = {str(room.pk) for room in rooms_updated}
+                        acquired_ids = {str(room.pk) for room in rooms}
+                        recovered_by_room = {}
+                        for message in messages_created:
+                            room_id = str(message.room_id)
+                            recovered_by_room[room_id] = recovered_by_room.get(room_id, 0) + 1
+                        for room_id in round_ids:
+                            scanned = room_id in scanned_ids
+                            reason = "" if scanned else (
+                                "credential_changed" if room_id in changed_credentials else
+                                deferred.get(room_id, "room_not_updated") if room_id in acquired_ids else "room_locked_or_missing"
+                            )
+                            progress[room_id] = {
+                                "state": (
+                                    ItemProgressState.COMPLETED.value if scanned
+                                    else ItemProgressState.DEFERRED.value
+                                ),
+                                "reason": reason,
+                                "recovered_count": recovered_by_room.get(room_id, 0),
+                            }
+                        metadata["room_progress"] = progress
+                        batch.processor_metadata = metadata
+                        completed, deferred, _, _ = scan_rooms_batch_counts(batch)
+                        batch.processed_count = completed
+                        batch.deferred_count = deferred
+                        summary = ProcessingSummary.model_validate(
+                            empty_processing_summary() if batch.result_summary is None else batch.result_summary
+                        )
+                        summary.stages[TELEGRAM_SCAN_STAGE] = scan_rooms_stage_summary(batch)
+                        batch.result_summary = summary.model_dump(mode="json")
+                        batch.save(update_fields=[
+                            "processor_metadata", "processed_count", "deferred_count", "result_summary", "updated_at",
+                        ])
+                        # Refresh Job totals only after a successful commit.
+                        transaction.on_commit(lambda job_id=batch.job_id: refresh_processing_job(job_id))
+                return messages_created, len(round_ids), len(rooms)
+
+            try:
+                for offset in range(0, len(room_ids), rooms_per_checkpoint):
+                    # 1. Select the next round (six room IDs by default).
+                    round_ids = room_ids[offset:offset + rooms_per_checkpoint]
+                    # 2. Keep room locks, extracted data and Batch progress in
+                    # one transaction. Success commits; an exception rolls
+                    # back this round without affecting previous checkpoints.
+                    outcome = process_room_round(round_ids)
+                    if outcome is None:
+                        break
+                    messages_created, checkpoint_rooms, acquired_rooms = outcome
+                    if not checkpoint_rooms:
+                        continue
+                    # 6. The transaction has committed and released its locks.
+                    committed_ids.extend(message.pk for message in messages_created)
+                    logger.info(
+                        "Telegram room checkpoint committed. batch_id=%s rooms=%s messages=%s",
+                        source_batch_id, checkpoint_rooms, len(messages_created),
+                    )
+                    rooms_since_sleep += acquired_rooms
+                    if rooms_since_sleep >= 60 and offset + rooms_per_checkpoint < len(room_ids):
+                        rooms_since_sleep %= 60
+                        logger.info(
+                            "Anti-FloodWait: [SCAN] '%s' sleeping for %ss after committed room checkpoints.",
+                            auth_key.get("name", "NOT FOUND!"), SLEEP_AFTER_X_REQUESTS,
+                        )
+                        # Sleep after commit, without retaining database locks.
+                        runner.run(asyncio.sleep(SLEEP_AFTER_X_REQUESTS))
+            finally:
+                # Close the shared client on success or failure. If scanning
+                # already failed, cleanup must not replace the original error
+                # needed by the task's FloodWait/authentication retry handler.
+                if client is not None:
+                    error_info = sys.exc_info()
+                    try:
+                        runner.run(client.__aexit__(*error_info))
+                    except BaseException:
+                        if error_info[0] is None:
+                            raise
+                        logger.exception("Telegram client cleanup failed after a room scan error")
+    except AuthKeyError:
+        TelegramAuth.objects.filter(pk=auth_key.get("pk")).update(is_valid=False)
+        raise
+    except IntegrityError:
+        logger.exception("Room checkpoint persistence failed; previous checkpoints remain committed")
+        raise
+    return committed_ids
+
+
+def _scan_comment_parent(
+    batch_id, lease_token, parent_id, extract_one, *, auth_id, max_msgs,
+    query_token=None, target_job_id=None, cancelled=None,
+):
+    """Lock and commit one explicit parent as an independent progress unit.
+
+    Parameters identify the source batch/lease, parent, synchronous bridge to
+    its client's event loop, credential, per-run limit and downstream target.
+    Return a state, newly stored IDs and a reason. Persist comments, offset,
+    handoffs and JSON progress together. A locked parent is terminally skipped
+    for this batch; a future execution can select it again.
+    Extraction/database errors before commit and stale leases roll back this
+    parent's transaction; earlier parents remain committed. Coordination errors
+    after commit retain the recorded progress for recovery.
+    An optional threading Event rejects saves interrupted by loop cancellation
+    or a soft timeout, including cancellation during synchronous persistence.
+    """
+    from app_scheduler.models import ProcessingBatch
+    from app_scheduler.services.jobs import (
+        ensure_stage_lease_locked,
+        refresh_processing_job,
+    )
+
+    from app_telegram.services.jobs import (
+        TELEGRAM_SCAN_COMMENTS_STAGE,
+        scan_comments_batch_counts,
+        scan_comments_stage_summary,
+        validate_scan_comments_batch,
+    )
+
+    close_old_connections()
+    try:
+        with transaction.atomic():
+            # Only the parent is exclusively locked. The room join must not
+            # serialize independent parents or block another room traversal.
+            parent = (
+                MessageItem.objects.select_related("room")
+                .select_for_update(skip_locked=True, of=("self",))
+                .filter(pk=parent_id).first()
             )
+            batch = None
+            progress = {}
+            if batch_id:
+                batch = ProcessingBatch.objects.select_related("job").get(pk=batch_id)
+                validate_scan_comments_batch(batch)
+                ensure_stage_lease_locked(batch, stage=TELEGRAM_SCAN_COMMENTS_STAGE, token=lease_token)
+                if str(parent_id) not in batch.item_ids:
+                    raise ValueError("Comment parent is not an explicit batch input")
+                if batch.job.status == JobStatus.PAUSED:
+                    return {
+                        "state": TaskOutcome.PAUSED.value,
+                        "message_ids": [],
+                        "reason": TaskOutcome.PAUSED.value,
+                    }
+                # Read progress/offset only after acquiring the parent lock.
+                progress = dict((batch.processor_metadata or {}).get("parent_progress", {}).get(str(parent_id), {}))
+                if progress.get("state") in SCAN_COMMENT_PARENT_TERMINAL_STATES:
+                    return {"state": progress["state"], "message_ids": [], "reason": progress.get("reason", "")}
 
-            if rooms_to_scan:
-                (msgs_list, rooms_to_update, related_msgs_to_update) = asyncio.run(
-                    _run_extract_tasks(rooms_to_scan, auth_key, max_msgs, total_msgs)
+            result = None
+            fetched_count = 0
+            original_access_hash = parent.room.access_hash if parent is not None else None
+            state, reason = ItemProgressState.PENDING, ""
+            if parent is None:
+                if MessageItem.objects.filter(pk=parent_id).exists():
+                    # Another transaction owns this parent. Skip it for this
+                    # batch without waiting or spending retries on contention.
+                    state, reason = ItemProgressState.SKIPPED, "parent_locked"
+                else:
+                    state, reason = ItemProgressState.SKIPPED, "parent_missing"
+            elif (
+                parent.is_reply or not parent.is_valid or not parent.room.is_channel
+                or not parent.room.is_valid or parent.room.is_private
+                or parent.room.is_deleted or not parent.room.following
+            ):
+                state, reason = ItemProgressState.SKIPPED, "parent_ineligible"
+            elif str(parent.room.access_auth_id) != str(auth_id):
+                reason = "credential_changed"
+            else:
+                remaining = max(max_msgs - int(progress.get("fetched_count", 0)), 0)
+                if remaining:
+                    if cancelled is not None and cancelled.is_set():
+                        raise asyncio.CancelledError()
+                    result = extract_one(room=parent.room, related_msg=parent, max_msgs=remaining)
+                    fetched_count = result.fetched_count
+                    reason = result.reason
+                    if result.completed:
+                        state = ItemProgressState.SKIPPED if reason else ItemProgressState.COMPLETED
+                    elif int(progress.get("fetched_count", 0)) + result.fetched_count >= max_msgs:
+                        state, reason = ItemProgressState.COMPLETED, "limit_reached"
+                else:
+                    state, reason = ItemProgressState.COMPLETED, "limit_reached"
+
+            if batch_id:
+                # Hold the batch lock only while merging progress. Validate
+                # the lease again before any write: a cancelled or replaced
+                # execution must roll back its entire parent operation.
+                batch = (
+                    ProcessingBatch.objects.select_for_update(no_key=True, of=("self",))
+                    .select_related("job").get(pk=batch_id)
                 )
+                ensure_stage_lease_locked(batch, stage=TELEGRAM_SCAN_COMMENTS_STAGE, token=lease_token)
 
-                # Create new msgs
-                init_time = time.time()
-                messages_created = MessageItem.objects.bulk_create(
-                    iterchain.from_iterable(msgs_list),
-                    batch_size=settings.BULK_BATCH_SIZE
+            if cancelled is not None and cancelled.is_set():
+                raise asyncio.CancelledError()
+            created = []
+            wait_until = None
+            extraction_error = result.error if result is not None else None
+            if result is not None:
+                # Access can change while Telegram is running, since only the
+                # parent was locked. Briefly lock the room at persistence to
+                # validate the binding and avoid overwriting a repaired access.
+                current_room = RoomItem.objects.select_for_update(of=("self",)).get(pk=parent.room_id)
+                if (
+                    str(current_room.access_auth_id) != str(auth_id)
+                    or current_room.access_hash != original_access_hash
+                ):
+                    result = None
+                    state, reason = ItemProgressState.PENDING, "credential_changed"
+            if result is not None:
+                rebase_messages(result.messages, current_room.link)
+                created = MessageItem.objects.bulk_create(result.messages, batch_size=settings.BULK_BATCH_SIZE)
+                if result.parent is not None:
+                    # Offset writes must stay inside this PostgreSQL unit;
+                    # avoid model-save indexing signals during the transaction.
+                    MessageItem.objects.filter(pk=result.parent.pk).update(
+                        last_offset=result.parent.last_offset,
+                        last_offset_update=result.parent.last_offset_update,
+                        last_scan_at=result.parent.last_scan_at,
+                        is_valid=result.parent.is_valid,
+                    )
+                if result.room is not None:
+                    RoomItem.objects.filter(pk=result.room.pk).update(
+                        is_private=result.room.is_private, is_valid=result.room.is_valid,
+                        access_auth_id=result.room.access_auth_id, access_hash=result.room.access_hash,
+                        last_update=result.room.last_update,
+                    )
+                if query_token and created:
+                    bulk_add_query_relationships(created, query_token)
+                _create_scan_message_handoffs(created, target_job_id=target_job_id, source_batch_id=batch_id)
+
+            # A stale room binding discards its comments, but a FloodWait still
+            # belongs to the client credential that actually made the request.
+            if isinstance(extraction_error, FloodWaitError):
+                logger.warning(
+                    "Telegram FloodWait while scanning comments. auth_id=%s parent_id=%s telegram_msg_id=%s seconds=%s",
+                    auth_id,
+                    parent_id,
+                    parent.msg_id,
+                    extraction_error.seconds,
                 )
-                logger.info(
-                    f"{len(messages_created)} MessageItem items were created "
-                    f"(bulk_create: {(time.time() - init_time):.3f} secs)."
+                from django.db.models import Value
+                from django.db.models.functions import Greatest
+                wait_until = timezone.now() + timezone.timedelta(seconds=extraction_error.seconds)
+                TelegramAuth.objects.filter(pk=auth_id).update(wait_until=Greatest("wait_until", Value(wait_until)))
+            elif isinstance(extraction_error, AuthKeyError):
+                TelegramAuth.objects.filter(pk=auth_id).update(is_valid=False)
+
+            if batch is not None:
+                metadata = dict(batch.processor_metadata or {})
+                parents = dict(metadata.get("parent_progress", {}))
+                # Merge the current JSON under the short batch lock, preserving
+                # progress committed concurrently by other room threads.
+                parents[str(parent_id)] = {
+                    **progress,
+                    "state": state.value,
+                    "reason": reason,
+                    "fetched_count": int(progress.get("fetched_count", 0)) + (result.fetched_count if result else 0),
+                    "recovered_count": int(progress.get("recovered_count", 0)) + len(created),
+                }
+                if wait_until:
+                    parents[str(parent_id)]["wait_until"] = wait_until.isoformat()
+                metadata["parent_progress"] = parents
+                batch.processor_metadata = metadata
+                completed, skipped, _, _ = scan_comments_batch_counts(batch)
+                batch.processed_count = completed
+                batch.skipped_count = skipped
+                summary = ProcessingSummary.model_validate(
+                    empty_processing_summary() if batch.result_summary is None else batch.result_summary
                 )
+                summary.stages[TELEGRAM_SCAN_COMMENTS_STAGE] = scan_comments_stage_summary(batch)
+                batch.result_summary = summary.model_dump(mode="json")
+                batch.save(update_fields=["processor_metadata", "processed_count", "skipped_count", "result_summary", "updated_at"])
+                transaction.on_commit(lambda job_id=batch.job_id: refresh_processing_job(job_id))
+            # A soft timeout can arrive during synchronous DB writes, after the
+            # async request already returned. Check again before atomic commits.
+            if cancelled is not None and cancelled.is_set():
+                raise asyncio.CancelledError()
+            return {
+                "state": state.value,
+                "message_ids": [message.pk for message in created],
+                "fetched_count": fetched_count,
+                "reason": reason,
+                "defer_client": isinstance(extraction_error, (FloodWaitError, AuthKeyError)),
+            }
+    finally:
+        # Each sync_to_async worker has its own Django connection. No connection
+        # may outlive the thread's parent transaction or leak into the loop.
+        connections.close_all()
 
-                # Update parent msgs
-                init_time = time.time()
-                related_msgs_to_update = [
-                    msg 
-                    for msg in iterchain.from_iterable(related_msgs_to_update) 
-                    if msg
-                ] # Remove Nones
-                MessageItem.objects.bulk_update(
-                    related_msgs_to_update,
-                    ['last_offset', 'last_offset_update' , 'last_scan_at', 'is_valid'],
-                    batch_size=settings.BULK_BATCH_SIZE
-                )
-                logger.info(
-                    f"{len(messages_created)} MessageItem items were updated "
-                    f"(bulk_create: {(time.time() - init_time):.3f} secs)."
-                )
-
-                # Bulk Update offsets from scanned rooms with new messages
-                rooms_to_update = [room for room in rooms_to_update if room] # Remove Nones
-                RoomItem.objects.bulk_update(
-                    rooms_to_update,
-                    ['last_offset', 'last_offset_update', 'last_update', 'last_scan_at', 'is_private', 'is_valid'],
-                    batch_size=settings.BULK_BATCH_SIZE
-                )
-
-                # Bind the Query to all the new Msgs. 
-                if token:
-                    bulk_add_query_relationships(messages_created, token)
-                
-                # Return will be recieved by postprocess_msgs in the pipeline
-                # (there is a celery chain)
-                return [msg.pk for msg in messages_created]
-    except IntegrityError as e:
-        logger.error(
-            f"{ e.__class__.__name__ }: {e}"
-        )    
-    return []
-
-
-# ======================================================
-# =====        CELERY TASKS: DATA PROCESSORS       =====
-# ======================================================
 
 @shared_task(track_started=True, ignore_result=False)
-def postprocess_msgs(msgs_pk, token = None):
-    """ Messages Post-processing
+def scan_comments(
+    parent_ids, auth_key, max_msgs=2500, token=None,
+    processing_handoff_target_job_id=None, source_batch_id=None, lease_token=None,
+):
+    """Scan only the supplied parent-message IDs using one Telegram client.
 
-    Returns
-    ---------- 
-    msgs_dict: dict
-        Returns a dict compatible with `app_telegram.services.telegram.items_to_index`
-        to allow the connection of these tasks in a Celery Pipeline.
+    Parameters supply immutable parent IDs, credentials, a per-parent/per-run
+    limit, optional query relation and durable batch/lease/handoff target.
+    Return the IDs of comments committed in this attempt. Persist each parent's
+    comments, offset and batch progress independently. Room traversals may be
+    scheduled concurrently, but parent requests sharing this credential are
+    serialized and spaced by ``SLEEP_AFTER_X_REQUESTS`` or, when a parent
+    returns no records, ``SLEEP_AFTER_EMPTY_COMMENT_PARENT``. Database, client
+    and stale-lease errors propagate after sibling work settles.
     """
-    msg_to_annotate = {}
-    for msg in MessageItem.objects.filter(pk__in=msgs_pk).values('pk', 'annotated_text', 'lang'):
-        # Group by lang
-        msg_to_annotate.setdefault(msg["lang"], []).append(
-            {
-                "pk": msg["pk"], 
-                "text": msg["annotated_text"]
-            }
-        )
+    parent_ids = list(dict.fromkeys(map(str, parent_ids)))
+    rooms_by_parent = {
+        str(parent_id): str(room_id)
+        for parent_id, room_id in MessageItem.objects.filter(pk__in=parent_ids).values_list("id", "room_id")
+    }
+    grouped = {}
+    for parent_id in parent_ids:
+        grouped.setdefault(rooms_by_parent.get(parent_id, "missing"), []).append(parent_id)
+    if not grouped:
+        return []
+    cancelled = Event()
 
-    # Annotate text (create entities and relate them to MessageItems)
-    # Celery Pipeline: Return will be recieved by ner_db_store
-    return ner_extraction(msg_to_annotate)
+    async def _run_extract_tasks():
+        """Own the client loop and await every independent transaction thread.
 
-    
+        Return newly committed comment IDs; no ORM work runs on this loop.
+        Callback cancellation propagates into atomic parent transactions.
+        """
+        stop = asyncio.Event()
+        semaphore = asyncio.Semaphore(8)
+        parent_request_lock = asyncio.Lock()
+        remaining_parents = len(parent_ids)
+        async with TelegramClient(
+            StringSession(auth_key.get("session", "")),
+            auth_key.get("api_id", 0), auth_key.get("api_hash", ""),
+            flood_sleep_threshold=0,
+        ) as client:
+            await client.start()
+
+            async def _extract_one(**kwargs):
+                """Use parent/room/limit kwargs to return an unsaved extraction result.
+
+                Run on this client's loop; persist nothing and propagate
+                unexpected errors or cancellation to the transaction thread.
+                """
+                return await _extract_messages_result(client=client, **kwargs)
+
+            # Construct AsyncToSync on this loop so transaction threads submit
+            # Telethon calls back here. thread_sensitive=False gives each room
+            # an independent connection and transaction while it holds a parent.
+            extract_one = async_to_sync(_extract_one)
+
+            async def _iterate_messages(ids):
+                """Scan explicit IDs sequentially in one room and return stored IDs.
+
+                Commit each parent via its thread bridge; pace all room groups
+                sharing this credential and stop on pause/flood. Unexpected
+                errors and lease rejection propagate after rollback.
+                """
+                nonlocal remaining_parents
+                async with semaphore:
+                    message_ids = []
+                    for parent_id in ids:
+                        if stop.is_set():
+                            break
+                        async with parent_request_lock:
+                            if stop.is_set():
+                                break
+                            outcome = await sync_to_async(
+                                _scan_comment_parent, thread_sensitive=False, executor=parent_workers,
+                            )(
+                                source_batch_id, lease_token, parent_id, extract_one,
+                                auth_id=auth_key.get("pk"), max_msgs=max_msgs,
+                                query_token=token, target_job_id=processing_handoff_target_job_id,
+                                cancelled=cancelled,
+                            )
+                            message_ids.extend(outcome["message_ids"])
+                            if outcome["state"] == TaskOutcome.PAUSED or outcome.get("defer_client"):
+                                stop.set()
+                            else:
+                                remaining_parents -= 1
+                                if remaining_parents:
+                                    sleep_seconds = (
+                                        SLEEP_AFTER_X_REQUESTS
+                                        if outcome.get("fetched_count", 0)
+                                        else SLEEP_AFTER_EMPTY_COMMENT_PARENT
+                                    )
+                                    logger.info(
+                                        "Anti-FloodWait: [SCAN COMMENTS] '%s' sleeping for %ss after parent %s.",
+                                        auth_key.get("name", "NOT FOUND!"),
+                                        sleep_seconds,
+                                        parent_id,
+                                    )
+                                    await asyncio.sleep(sleep_seconds)
+                    return message_ids
+
+            tasks = [asyncio.create_task(_iterate_messages(ids)) for ids in grouped.values()]
+            try:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            except BaseException:
+                # A soft timeout or cancellation must settle the async bridge
+                # before the client closes. Uncommitted parent units roll back.
+                cancelled.set()
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+            return list(iterchain.from_iterable(results))
+
+    # Django has no async transactions in 4.2 or 6.x (as of 6.1). Run each
+    # parent's synchronous ORM transaction in a thread so database waits do not
+    # block Telethon's scan loop.
+    # Shutdown joins transaction threads after cancellation.
+    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="telegram-comments") as parent_workers:
+        try:
+            return asyncio.run(_run_extract_tasks())
+        except BaseException:
+            cancelled.set()
+            raise

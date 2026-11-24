@@ -1,0 +1,124 @@
+/* Django admin skin shared with the dashboard shell. */
+
+html[data-theme="light"], :root {
+    --primary: var(--brand-contrast);
+    --secondary: var(--brand-contrast);
+    --accent: var(--brand-contrast);
+    --primary-fg: var(--brand-base);
+    --body-fg: var(--brand-contrast);
+    --body-bg: var(--brand-base);
+    --body-quiet-color: var(--muted);
+    --body-loud-color: var(--brand-contrast);
+    --header-color: var(--header-fg);
+    --header-branding-color: var(--header-fg);
+    --header-bg: var(--shell-header-bg);
+    --header-link-color: var(--header-fg);
+    --breadcrumbs-fg: var(--header-fg);
+    --breadcrumbs-link-fg: var(--header-fg);
+    --breadcrumbs-bg: var(--shell-header-bg);
+    --link-fg: var(--brand-contrast);
+    --link-hover-color: var(--muted);
+    --link-selected-fg: var(--brand-contrast);
+    --hairline-color: var(--line);
+    --border-color: var(--control-line);
+    --darkened-bg: var(--surface);
+    --selected-bg: var(--accent-soft);
+    --selected-row: var(--accent-soft-strong);
+    --button-fg: var(--on-accent);
+    --button-bg: var(--accent);
+    --button-hover-bg: var(--accent-hover);
+    --default-button-bg: var(--accent);
+    --default-button-hover-bg: var(--accent-hover);
+    --close-button-bg: var(--muted);
+    --close-button-hover-bg: var(--brand-contrast);
+    --object-tools-fg: var(--header-fg);
+    --object-tools-bg: var(--shell-header-bg);
+    --object-tools-hover-bg: var(--header-hover-bg);
+}
+
+html[data-theme="dark"] {
+    --primary: var(--brand-contrast);
+    --secondary: var(--brand-contrast);
+    --accent: var(--brand-contrast);
+    --primary-fg: var(--brand-base);
+    --body-fg: var(--brand-contrast);
+    --body-bg: var(--brand-base);
+    --body-quiet-color: var(--muted);
+    --body-loud-color: var(--brand-contrast);
+    --header-color: var(--header-fg);
+    --header-branding-color: var(--header-fg);
+    --header-bg: var(--shell-header-bg);
+    --header-link-color: var(--header-fg);
+    --breadcrumbs-fg: var(--header-fg);
+    --breadcrumbs-link-fg: var(--header-fg);
+    --breadcrumbs-bg: var(--shell-header-bg);
+    --link-fg: var(--brand-contrast);
+    --link-hover-color: var(--muted);
+    --link-selected-fg: var(--brand-contrast);
+    --hairline-color: var(--line);
+    --border-color: var(--control-line);
+    --darkened-bg: var(--surface);
+    --selected-bg: var(--accent-soft);
+    --selected-row: var(--accent-soft-strong);
+    --button-fg: var(--on-accent);
+    --button-bg: var(--accent);
+    --button-hover-bg: var(--accent-hover);
+    --default-button-bg: var(--accent);
+    --default-button-hover-bg: var(--accent-hover);
+    --close-button-bg: var(--muted);
+    --close-button-hover-bg: var(--brand-contrast);
+    --object-tools-fg: var(--header-fg);
+    --object-tools-bg: var(--shell-header-bg);
+    --object-tools-hover-bg: var(--header-hover-bg);
+}
+
+.site-header a.brand:link, .site-header a.brand:visited { color: var(--header-fg); }
+.site-header a.brand:hover, .site-header a.brand:focus { color: var(--header-fg); }
+.site-header a.brand span { color: var(--header-muted); }
+.site-header nav a:link, .site-header nav a:visited { color: var(--header-muted); }
+.site-header nav a:hover, .site-header nav a:focus, .site-header .link-button:hover, .site-header .link-button:focus { color: var(--header-fg); }
+
+#container.admin-container { width: 100%; min-width: 0; }
+.admin-breadcrumbs { margin: -18px 0 22px; }
+.admin-breadcrumbs .breadcrumbs { border: 2px solid var(--line); border-radius: 0; background: var(--accent-soft); color: var(--muted); padding: 10px 14px; box-shadow: 3px 3px 0 var(--hard-shadow); }
+.admin-breadcrumbs .breadcrumbs a { color: var(--accent-dark); }
+#main.admin-main, #main.main { display: flex; gap: 22px; min-width: 0; }
+#content-start.content { flex: 1 1 auto; min-width: 0; padding: 0; }
+#content { max-width: none; padding: 0; }
+#content h1 { color: var(--ink); font-size: clamp(1.8rem, 4vw, 2.7rem); font-weight: 750; letter-spacing: -.04em; margin: 0 0 22px; }
+#content h2 { color: var(--ink); }
+#content-main { max-width: none; }
+#content .module, #content-main .module, #content-related .module { overflow: hidden; border: 2px solid var(--line); border-radius: 0; background: var(--surface); box-shadow: 4px 4px 0 var(--hard-shadow); }
+#content .module h2, #content .module caption, #content-main .module h2, #content-main .module caption, #content-related .module h2 { background: var(--shell-header-bg); color: var(--header-fg); }
+#content .module table, #content-main .module table { background: transparent; }
+#content .submit-row { border: 2px solid var(--line); border-radius: 0; background: var(--surface); box-shadow: 3px 3px 0 var(--hard-shadow); }
+#content input[type="submit"], #content input[type="button"], #content button, #content a.button, #content .button, #content .submit-row input {
+    border: 2px solid var(--control-line);
+    border-radius: 0;
+    box-shadow: 3px 3px 0 var(--hard-shadow);
+    font-family: var(--type-body);
+    font-weight: 600;
+    transition: color .16s ease, background-color .16s ease, border-color .16s ease, box-shadow .12s ease, transform .12s ease;
+}
+#content input[type="submit"]:hover, #content input[type="button"]:hover, #content button:hover,
+#content a.button:hover, #content .button:hover, #content .submit-row input:hover {
+    border-color: var(--accent-hover);
+    background-color: var(--accent-soft-strong);
+    color: var(--ink);
+    box-shadow: 4px 4px 0 var(--hard-shadow-strong);
+    transform: translateY(-1px);
+}
+#content input.default, #content .submit-row input.default { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+#content input.default:hover, #content .submit-row input.default:hover { border-color: var(--accent-hover); background: var(--accent-hover); color: var(--on-accent); }
+#content input, #content select, #content textarea { max-width: 100%; }
+#nav-sidebar { flex: 0 0 230px; border-right: 1px solid var(--line); background: transparent; }
+#nav-sidebar .module { border-bottom: 1px solid var(--line); }
+#nav-sidebar .current-app .section:link, #nav-sidebar .current-app .section:visited { color: var(--header-fg); background: var(--shell-header-bg); }
+.messagelist { margin: 0 0 18px; }
+.messagelist li { border-radius: 0; border: 2px solid var(--line); box-shadow: 3px 3px 0 var(--hard-shadow); }
+
+@media (max-width: 800px) {
+    #main.main { display: block; }
+    #nav-sidebar { display: none; }
+    .admin-breadcrumbs { margin-top: 0; }
+}

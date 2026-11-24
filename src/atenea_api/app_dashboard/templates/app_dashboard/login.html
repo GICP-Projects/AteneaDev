@@ -1,0 +1,18 @@
+{% extends "app_dashboard/base.html" %}
+{% load i18n %}
+{% block title %}{% translate "Sign in" %}{% endblock %}
+{% block content %}
+<section class="auth-card" aria-labelledby="login-title">
+    <p class="eyebrow">{% translate "Internal console" %}</p>
+    <h1 id="login-title">{% translate "Sign in" %}</h1>
+    <p class="muted">{% translate "Access is restricted to authorized users." %}</p>
+    <form method="post" class="stack-form">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ next }}">
+        {% if form.non_field_errors %}<div class="form-errors">{{ form.non_field_errors }}</div>{% endif %}
+        {% include "app_dashboard/components/field.html" with field=form.username %}
+        {% include "app_dashboard/components/field.html" with field=form.password %}
+        <button class="button button-primary" type="submit">{% translate "Sign in" %}</button>
+    </form>
+</section>
+{% endblock %}

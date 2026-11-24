@@ -1,377 +1,214 @@
-# Atenea
+<h1 align="center">Atenea</h1>
 
-## Quick links
+<p align="center">
+  <strong>An open-source platform for continuous Telegram monitoring, NLP enrichment, and semantic retrieval.</strong>
+</p>
 
-- [Development deployment](./src/atenea_api/docs/dev_deployment.md)
-- [Production deployment](./src/atenea_api/docs/prod_deployment.md)
-- [Environment variables](./src/atenea_api/docs/enviroments.md)
-- [Extra configuration](./src/atenea_api/docs/configuration.md)
+<p align="center">
+  <a href="https://doi.org/10.1016/j.softx.2026.103067"><img alt="SoftwareX DOI" src="https://img.shields.io/badge/SoftwareX-10.1016%2Fj.softx.2026.103067-orange"></a>
+  <a href="https://github.com/GICP-Projects/AteneaDev/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/GICP-Projects/AteneaDev?sort=semver"></a>
+  <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <img alt="Python 3.11" src="https://img.shields.io/badge/python-3.11-3776AB?logo=python&logoColor=white">
+  <img alt="Django REST Framework" src="https://img.shields.io/badge/Django%20REST-Framework-092E20?logo=django&logoColor=white">
+</p>
 
-## Table of contents
+<p align="center">
+  <a href="#features">Features</a> ·
+  <a href="#screenshots">Screenshots</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#documentation">Documentation</a> ·
+  <a href="#citation">Citation</a>
+</p>
 
-- [Overview](#overview)
-- [Architecture and Design](#architecture-and-design)
-  - [Platform architecture](#platform-architecture)
-  - [API design](#api-design)
-  - [Platform Workflow](#platform-workflow)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Configuration](#configuration)
-- [Reproducibility Notes](#reproducibility-notes)
-- [License](#license)
-- [Citation](#citation)
+<p align="center">
+  <img src="./src/atenea_api/docs/images/dashboard-overview.png" alt="Atenea staff dashboard: message activity overview" width="900">
+</p>
 
-## Overview
+Atenea monitors public Telegram channels and groups continuously and builds
+persistent, enriched repositories from them. It combines seed-based channel
+discovery, credential-aware data collection, NLP enrichment (named entities,
+sentiment, embeddings), attachment preservation, and retrieval through lexical,
+semantic and structured queries.
 
-Atenea is a platform for continuous Telegram monitoring and the construction of persistent, enriched repositories. It combines seed-based channel discovery, credential-aware data collection, Named Entity Recognition (NER), sentiment analysis, embeddings, attachment cataloguing and preservation, and retrieval through lexical, semantic, and structured queries.
+It is designed for research and operational workflows such as longitudinal
+analysis, monitoring of entities or topics, anomaly-oriented time-series
+exploration, early detection of coordinated campaigns (disinformation, spam),
+and reproducible dataset construction.
 
-The platform uses Elasticsearch for lexical and structured search and Qdrant for vector storage and semantic retrieval. This enables tasks such as longitudinal analysis, monitoring of entities or topics, anomaly-oriented time-series exploration, and dataset construction.
+## Features
 
-Atenea specializes in monitoring Telegram channels, facilitating the early detection of organized attacks, such as the spread of disinformation or spam, in their initial stages.
+- **Continuous collection.** Ingest seed links in bulk, resolve them into
+  monitorable rooms, and scan messages and channel comments on a schedule.
+- **Credential pool.** Telegram API credentials are load-balanced
+  automatically, with `FloodWait` tracking and access recovery for rooms whose
+  credential stops working.
+- **NLP enrichment.** Named Entity Recognition and sentiment run as scalable
+  FastAPI microservices. Embeddings come from any OpenAI-compatible provider
+  (OpenAI, vLLM, Ollama).
+- **Search.** Lexical and structured search on Elasticsearch, semantic search
+  on Qdrant, and cursor-paginated retrieval of stored messages for bulk export.
+- **Analytics.** Message activity statistics with z-score anomaly overlays, and
+  entity rankings backed by ClickHouse.
+- **Attachment preservation.** Catalogue Telegram media metadata or download
+  selected files to S3-compatible storage with SHA-256 provenance. Whitelisted
+  external download URLs are catalogued as well.
+- **Durable processing.** Every pipeline runs as a resumable Job made of leased
+  Batches, with retries, recovery, and interval, crontab or one-off schedules.
+- **Staff dashboard.** A web UI to explore activity, search messages, launch
+  and follow Jobs, and manage schedules, alongside the full REST API (Swagger).
+- **Collections through tags.** Seeds carry user-defined tags that propagate to
+  rooms and messages, so every step of the workflow can target the same
+  reproducible collection.
 
-Atenea's technological architecture is built on Django REST Framework, which forms the main core of the project. PostgreSQL is used for relational persistence and attachment metadata, Elasticsearch for keyword search, Qdrant for vector storage and semantic retrieval, and S3-compatible object storage for downloaded Telegram media. The platform also uses FastAPI for auxiliary microservices and Kibana for Elasticsearch dashboards.
+## Screenshots
 
-## Architecture and Design
+<table>
+  <tr>
+    <td width="50%"><img src="./src/atenea_api/docs/images/dashboard-search.png" alt="Message search in the staff dashboard"></td>
+    <td width="50%"><img src="./src/atenea_api/docs/images/dashboard-jobs.png" alt="Job list with Batch progress"></td>
+  </tr>
+  <tr>
+    <td align="center"><em>Lexical and stored-message search</em></td>
+    <td align="center"><em>Jobs and their Batch progress</em></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="./src/atenea_api/docs/images/dashboard-job-graph.png" alt="Job graph of a durable processing pipeline"></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><em>Pipeline flow of a Job: collection, entity detection and indexing, Batch by Batch</em></td>
+  </tr>
+</table>
 
-The main component is a modular Django REST Framework API that coordinates
-ingestion, persistence, processing, and retrieval while delegating specialised
-NLP and embedding workloads to external services.
+## Architecture
 
-Long-running ingestion and processing requests are executed asynchronously by
-**Celery**, with **Redis** acting as broker and media-progress store. The main
-pipelines include:
+<p align="center">
+  <img src="./src/atenea_api/docs/images/AteneaDev_architecture.png" alt="Atenea architecture" width="900">
+</p>
 
-- seed population and room access recovery;
-- room and comment scanning;
-- NER extraction, sentiment analysis, categorization, and embeddings;
-- Elasticsearch indexing and Qdrant vector synchronization;
-- Telegram attachment metadata collection and selective S3-compatible storage;
-- external cloud/download URL cataloguing.
+| Component | Role |
+|-----------|------|
+| **Django REST API** | Core of the platform: authentication, endpoints, Telegram credential management, the staff dashboard and the scheduler. |
+| **Celery + Redis** | Asynchronous ETL pipelines on dedicated queues (scan, index, NER, embeddings, sentiment). Redis is the broker and stores media progress. |
+| **PostgreSQL** | Source of truth for seeds, rooms, messages, annotations, Jobs and attachment metadata. |
+| **Elasticsearch + Kibana** | Lexical and structured search, activity statistics and optional Kibana dashboards. |
+| **Qdrant** | Message embeddings for semantic search and embedding-based categorization. |
+| **ClickHouse** | Analytical facts for entity rankings. |
+| **S3-compatible storage** | Selectively downloaded Telegram media (MinIO, AWS S3, R2, and others). |
+| **NER and sentiment services** | FastAPI microservices that scale independently behind a load balancer. |
+| **Embeddings provider** | Any OpenAI-compatible endpoint. |
 
-Celery Beat and the scheduler API can run these operations recurrently for
-continuous monitoring.
+See the [API README](./src/atenea_api/README.md#architecture-and-design) for the
+detailed architecture, the endpoint reference and the end-to-end workflow.
 
-Moreover, the API integrates services for computationally intensive workloads,
-allowing each processing component to scale independently. The local FastAPI
-microservices can operate behind a load balancer, while embeddings are consumed
-through an OpenAI-compatible endpoint and stored in Qdrant. Currently, the local
-microservices are:
-- NER service: specializes in Named Entity Recognition.
-- Sentiment service: specializes in sentiment classification.
-
-Finally, Kibana can be used by advanced users to create interactive dashboards for data visualization and analysis over Elasticsearch indexes.
-
-### Platform architecture
-```mermaid
-flowchart LR
-    Clients[API clients] --> API[Django REST API]
-    Discovery[Seed discovery and bulk ingestion] --> API
-    API <--> Telegram[Telegram API]
-    API --> Redis[Redis broker and progress]
-    Scheduler[Celery Beat and scheduler API] --> Redis
-    Redis --> Workers[Celery workers]
-
-    API <--> PostgreSQL[(PostgreSQL)]
-    Workers <--> PostgreSQL
-    Workers --> Elasticsearch[(Elasticsearch)]
-    Elasticsearch --> Kibana[Kibana]
-    Workers --> Qdrant[(Qdrant)]
-    Workers --> S3[(S3-compatible object storage)]
-    Workers --> NER[NER service]
-    Workers --> Sentiment[Sentiment service]
-    Workers --> Embeddings[OpenAI-compatible embeddings API]
-    Embeddings --> Workers
-```
-
-1.  **Seed discovery and ingestion**: Telegram groups and channels can be identified manually or with external discovery tools. Atenea receives the selected resources through its bulk seed-ingestion API; web crawlers are not bundled with this repository.
-    
-2.  **Atenea API**:
-    -   **Authorization**: This area ensures that only authorized users or systems can access some API endpoints, by using authentication tokens.
-    -   **API Endpoints**: These are the interfaces through which clients interact with Atenea's services. They handle incoming requests and send back the appropriate responses.
-    -   **ETL Pipelines**:
-        -   **Message Broker**: A Redis database that queues messages (tasks) to be processed. It acts as a middleman between the API endpoints and the workers.
-        -   **Workers**: These are background processes powered by Celery that execute tasks from the message broker, such as data ingestion and post-processing.
-3.  **Storage and Database**:
-    -   **Relational Database**: A PostgreSQL database used for structured data storage.
-    -   **Elasticsearch**: Search indexes optimized for lexical and structured information retrieval.
-    -   **Qdrant**: A vector database used for message embeddings and semantic search.
-    -   **S3-compatible object storage**: Stores selectively downloaded Telegram media. PostgreSQL retains the associated filename, MIME type, size, SHA-256 hash, status, object key, and message/room provenance.
-4.  **Kibana**: A data visualization dashboard for Elasticsearch that provides visualization capabilities on top of the content indexed on an Elasticsearch cluster.
-5. **External APIs**:
-    -   **Telegram API**: Telegram API for downloading data.
-6.  **Load Balancer**: This component distributes incoming network traffic across multiple instances of the API NER service, ensuring no single server bears too much demand.
-	- **API NER**: A microservice used by the platform to perform Named Entity Recognition (NER) during data ingestion.
-	- **API Sentiment**: A microservice used by the platform to classify sentiment labels.
-7.  **Embeddings provider**: An OpenAI-compatible embeddings API, such as OpenAI, vLLM, or Ollama. Atenea stores the resulting vectors in Qdrant.
-    
-8.  **Clients**: These are the end-users or systems that make requests directly to the API.
-    
-The entire Atenea platform is built on Django REST Framework for the backend, utilizes FastAPI for microservices development, and employs Kibana for data visualization.
-
-In the context provided, this architecture supports the extraction and monitoring of data from Telegram channels. It is designed to detect organized attacks, misinformation, and spam by providing advanced search capabilities and data analysis tools to understand the flow of information over time.
-
-### API design
-
-#### General Endpoints
-|                | Path                                | Description                                      |
-|----------------|-------------------------------------|--------------------------------------------------|
-| Tags           | `/api/v1/front/form/tags`           | Retrieve a list of tags.                         |
-| Languages      | `/api/v1/front/form/languages`      | List available languages.                        |
-| List Categories| `/api/v1/metadata/category`         | Retrieve a list of categories.                   |
-| Scheduled Tasks| `/api/v1/scheduler/task`            | Create, inspect, update, or delete recurrent Celery tasks. |
-
-
-#### Data Ingestion Endpoints
-|                | Path                              | Description                                       |
-|----------------|-----------------------------------|---------------------------------------------------|
-| Category Bulk    | `/api/v1/metadata/category/bulk` | Inserts categories from a JSON list and calculates their embeddings. |
-| Seed Bulk        | `/api/v1/tg/seed/bulk`          | Inserts Telegram seed links from a JSON list. |
-| Seed Populate    | `/api/v1/tg/seed/populate`      | Takes previous ingested Telegram links and starts populating them using the Telegram API. |
-| Scan Room        | `/api/v1/tg/room/scan`          | Starts scanning already populated Telegram groups/channels. |
-| Recover Room Access | `/api/v1/tg/room/access`      | Recalculate access data for rooms that can no longer be reached with their stored credential. |
-
-
-#### Data Processing Endpoints
-|                | Path                              | Description                                       |
-|----------------|-----------------------------------|---------------------------------------------------|
-| Scan Comments   | `/api/v1/tg/msg/scan`            | Scan discussion comments associated with selected channel messages. |
-| NER             | `/api/v1/tg/msg/ner`             | Process Named Entity Recognition (NER) on messages. |
-| Embed           | `/api/v1/tg/msg/embed`           | Calculate message embeddings through the configured OpenAI-compatible provider and store vectors in Qdrant. |
-| Categorize      | `/api/v1/tg/msg/categorize`      | Categorize messages with embedding-based category matching. |
-| Sentiment       | `/api/v1/tg/msg/sentiment`       | Classify sentiment labels for messages.           |
-| Index Messages  | `/api/v1/tg/msg/index`           | Index messages in Elasticsearch.                  |
-| Vector Status   | `/api/v1/tg/msg/vector`          | Inspect vector synchronization state for messages. |
-| Download Media  | `/api/v1/tg/msg/media/download`  | Catalogue Telegram media metadata or selectively download matching files into S3-compatible storage. Supports room/tag, date, language, extension, and size filters, plus `metadata_only=true`. |
-| Media Progress  | `/api/v1/tg/msg/media/download/status` | Inspect Redis-backed progress for a media download token. |
-| Collect URLs    | `/api/v1/tg/msg/external-url/collect` | Store whitelisted external cloud/download URLs from already scanned messages without downloading them. |
-| Delete Media    | `/api/v1/tg/msg/downloadable` (`DELETE`) | Preview (`dry_run=true`) or delete scoped downloaded objects while retaining deletion state in PostgreSQL. |
-
-
-#### Search endpoints
-The main search routes are stable. Query parameters, filters, ordering fields,
-and pagination details are documented in the Swagger schema.
-
-|                | Path                                    | Description                                               |
-|----------------|-----------------------------------------|-----------------------------------------------------------|
-| Search Message | `/api/v1/tg/msg/search`                 | Elasticsearch message search.                      |
-| Smart Msg Search | `/api/v1/tg/msg/ai`                   | Qdrant-backed semantic message search.             |
-| Downloadable Catalog | `/api/v1/tg/msg/downloadable`     | Retrieve Telegram media metadata, signed links for stored objects, and whitelisted external URLs grouped by room. |
-| Search Room    | `/api/v1/tg/room/search`                | Elasticsearch room search.                         |
-| Room Suggest   | `/api/v1/tg/room/search/suggest`        | Get room suggestions.                              |
-| Message Statistics | `/api/v1/stats/msg`                 | Aggregate message counts by day, week, month, or year, optionally calculating a z-score. |
-
-
-Any additional endpoint can be found on the documentation page, http://127.0.0.1:8000/swagger
-
-### Platform Workflow
-
-#### Tags as collection selectors
-Tags are user-defined labels assigned to seeds to organise related Telegram
-resources into reproducible collections, for example `collection-june-2026`, `spain-elections`, or
-`project-x`. When a seed is populated, its tags are propagated to the resulting
-room. Message operations then select messages through the tags of their source
-rooms, so the same collection identifier can be reused across the complete
-workflow:
+## Repository layout
 
 ```text
-seed ingestion -> room population -> scanning -> enrichment/indexing
--> attachment processing -> statistics and retrieval
+.
+├── .env.example            # Template for every environment variable
+├── src/
+│   ├── atenea_api/         # Django REST API, Celery pipelines and staff dashboard
+│   │   ├── app_*/          # Django apps (telegram, entity, metadata, scheduler, stats, dashboard, ...)
+│   │   ├── docs/           # Deployment, configuration, API, pipeline and scheduling guides
+│   │   └── es_cluster/     # Elasticsearch + Kibana Docker Compose stack
+│   └── atenea_services/    # FastAPI microservices: api_ner and api_sentiment
+└── LICENSE
 ```
 
-For example, `tag=darkgram` restricts each compatible endpoint to rooms derived
-from that collection and to their messages. Multiple `tag` parameters can be
-combined with `tag_match=any` (the default) or `tag_match=all`. Tags are
-collection metadata; they are distinct from Telegram hashtags, extracted
-entities, and embedding-based categories.
+## Quick start
 
-#### 1. Channel/group scouting
-First, identify the Telegram channels or groups to monitor, either manually or with an external discovery process. Submit the selected links to Atenea through the bulk seed-ingestion endpoint described below.
+Requirements: Docker with Compose, [uv](https://docs.astral.sh/uv/),
+Python 3.11, GNU `screen`, and a reachable Elasticsearch 8 cluster (a ready-made
+stack is provided in [`src/atenea_api/es_cluster`](./src/atenea_api/es_cluster/README.md)).
 
-#### 2. Enabling the Telegram API
-To use the Telegram API for data extraction, access credentials associated with a phone number are required. These accounts can be easily added from the administration panel in the TelegramAuth model (http://127.0.0.1:8000/admin/app_telegram/telegramauth/).
-
-<img src="./src/atenea_api/docs/images/AteneaDev_add_tg_auth.png" alt="Add new Telegram API Credential" width="450"/>
-
-- When the platform receives a request related to data extraction from Telegram, it automatically distributes the load among the available credentials.
-- Each credential can perform up to 200 `ResolveUsername` operations per day. This limit applies to resolving new usernames, not to scanning messages from known rooms. Once a room has been resolved, Atenea reuses its Telegram ID and access hash, allowing substantially larger message volumes to be monitored.
-- If Telegram returns a `FloodWait`, Atenea records the waiting period and avoids reusing the affected credential until it becomes available.
-- This system allows for a straightforward increase in data extraction capacity by adding more credentials.
-
-#### 3.1 ETL Pipeline: Create seeds 
-Once channels have been selected, call `/api/v1/tg/seed/bulk` and assign the
-tags that identify their collection:
-```
-[
-    {
-        "link": "https://t.me/<CHANNEL>",
-        "tags": [
-            "tag1",
-            "tag2"
-        ]
-    },
-    {
-        "link": "https://t.me/<CHANNEL>",
-        "tags": [
-            "tag1",
-            "tag2"
-        ]
-    },
-		...
-]
-```
-
-#### 3.2 ETL Pipeline: Populate seeds to enable its monitoring
-Each inserted link becomes a `SeedItem` waiting to be resolved into a monitorable room. Use `/api/v1/tg/seed/populate` to process selected seeds. Requests can be scoped by resource/title match, tag, language, resource type, and collection date.
-
-#### 3.3 ETL Pipeline: Scan channels/groups to retrieve messages
-Populated rooms can be scanned recurrently through `/api/v1/tg/room/scan`.
-Rooms can be selected by name, tag, language, room type, or last-update range,
-and each request can limit the number of messages retrieved per room. The
-default scan workflow stores new messages and runs the configured text
-post-processing and indexing stages. Channel comments can be collected
-separately through `/api/v1/tg/msg/scan`.
-
-#### 3.4 ETL Pipeline: Catalogue or preserve attachments
-After messages have been scanned, `/api/v1/tg/msg/media/download` can catalogue
-Telegram attachment metadata without transferring the payload
-(`metadata_only=true`) or selectively store matching files in S3-compatible
-object storage. Downloaded objects retain their source-message provenance,
-SHA-256 hash, risk flags, and processing state. The same collection can also be
-scanned for whitelisted external download URLs through
-`/api/v1/tg/msg/external-url/collect`.
-
-#### 4. Search and analyze data
-Once the platform has a relevant amount of messages indexed in Elasticsearch, the search endpoint `/api/v1/tg/msg/search` will be ready for retrieval. It is also available to search by channels with the `/api/v1/tg/room/search` endpoint. Semantic search is available through `/api/v1/tg/msg/ai` when embeddings have been calculated and synchronized with Qdrant.
-
-Message activity can be aggregated through `/api/v1/stats/msg`, while
-downloaded media and external references can be retrieved through
-`/api/v1/tg/msg/downloadable`. Stored media are exposed through temporary
-S3-compatible presigned URLs rather than public bucket access. Kibana dashboards
-can additionally be created over the Elasticsearch indexes.
-
-<img src="https://i.imgur.com/k5XjRGE.png" alt="Kibana dashboard example" width="650"/>
-
-## Installation
-
-Atenea is organized as a multi-component research software project:
-
-- `src/atenea_api`: the main Django REST Framework API.
-- `src/atenea_services`: auxiliary FastAPI microservices for NER and sentiment analysis.
-
-The recommended setup uses [uv](https://docs.astral.sh/uv/) to create and
-synchronize an isolated environment for each Python component.
-
-1. Create the environment file from the public template:
+1. **Configure the environment.** Fill in the values in `.env.dev` without
+   quotes, because Docker reads them verbatim.
    ```bash
    cp .env.example .env.dev
    ```
-
-2. Fill in the required values in `.env.dev`. Do not use quotes around values that are consumed by Docker.
-
-3. Synchronize the API environment, then enter `src/atenea_services` to
-   synchronize the microservice environments:
+2. **Install the API dependencies.**
    ```bash
    uv sync --project src/atenea_api
-   cd src/atenea_services
-   uv sync --project api_ner
-   uv sync --project api_sentiment
-   cd ../..
    ```
-
-4. Start the development infrastructure from `src/atenea_api`:
+3. **Start everything.** This launches the infrastructure (PostgreSQL, Redis,
+   MinIO, ClickHouse), applies the migrations, and starts the Django server on
+   port `28000` and every Celery worker in `screen` sessions.
+   ```bash
+   src/atenea_api/deploy_dev.sh up
+   ```
+4. **Create an administrator.**
    ```bash
    cd src/atenea_api
-   docker compose -f docker-compose.dev.yml --env-file ../../.env.dev -p atenea-dev up -d
+   DJANGO_SETTINGS_MODULE=atenea_api.settings.development uv run python manage.py createsuperuser
    ```
+5. **Add a Telegram API credential** in the Django admin at
+   <http://localhost:28000/admin/app_telegram/telegramauth/>. Then open the
+   dashboard at <http://localhost:28000/dashboard/> or the API documentation at
+   <http://localhost:28000/swagger>.
 
-5. Run the initial Django setup through the synchronized API environment:
-   ```bash
-   export DJANGO_SETTINGS_MODULE=atenea_api.settings.development
-   uv run python manage.py migrate
-   uv run python manage.py createsuperuser
-   ```
+The NER and sentiment services are deployed separately, as described in
+[`src/atenea_services`](./src/atenea_services/README.md). For the step-by-step
+setup, see the [development deployment guide](./src/atenea_api/docs/dev_deployment.md);
+for a server installation, see the [production deployment guide](./src/atenea_api/docs/prod_deployment.md).
 
-Detailed deployment instructions are available in [`src/atenea_api/docs/dev_deployment.md`](./src/atenea_api/docs/dev_deployment.md) and [`src/atenea_api/docs/prod_deployment.md`](./src/atenea_api/docs/prod_deployment.md).
+## Documentation
 
-## Quick Start
+| Topic | Guide |
+|-------|-------|
+| Architecture, endpoints and workflow | [API README](./src/atenea_api/README.md) |
+| REST API walkthrough | [REST API usage](./src/atenea_api/docs/api_usage.md) |
+| Staff dashboard | [Dashboard guide](./src/atenea_api/docs/dashboard.md) |
+| Development deployment | [Development deployment](./src/atenea_api/docs/dev_deployment.md) |
+| Production deployment | [Production deployment](./src/atenea_api/docs/prod_deployment.md) |
+| Environment variables | [Environment reference](./src/atenea_api/docs/enviroments.md) |
+| First-time configuration | [Configuration](./src/atenea_api/docs/configuration.md) |
+| Durable processing and pipelines | [Documentation map](./src/atenea_api/docs/README.md) |
+| NER and sentiment microservices | [Services README](./src/atenea_services/README.md) |
+| Required models | [Models](./src/atenea_api/models/README.md) |
+| Testing | [Testing strategy](./src/atenea_api/docs/testing.md) |
 
-After installing the API dependencies and starting the infrastructure services:
+## Reproducibility notes
 
-1. Launch the Django development server:
-   ```bash
-   cd src/atenea_api
-   export DJANGO_SETTINGS_MODULE=atenea_api.settings.development
-   uv run python manage.py runserver
-   ```
+Reproduce a deployment from the tracked source code, Docker Compose files,
+`uv.lock` lockfiles and `.env.example` templates. For privacy, security and
+storage reasons, this repository does not include:
 
-2. Start the Celery workers required by the pipeline in separate terminals:
-   ```bash
-   uv run celery -A atenea_api beat -l INFO
-   uv run celery -A atenea_api worker -Q default -n AT1@%h -l INFO --concurrency=4
-   uv run celery -A atenea_api worker -Q index-q -n AT2@%h -l INFO --concurrency=1
-   uv run celery -A atenea_api worker -Q ner-q -n AT3@%h -l INFO --concurrency=2
-   uv run celery -A atenea_api worker -Q embed-q -n AT4@%h -l INFO --concurrency=1
-   uv run celery -A atenea_api worker -Q sentiment-q -n AT5@%h -l INFO --concurrency=1
-   ```
+- environment files with real values, API keys, OAuth/JWT secrets, Telegram
+  sessions or certificates;
+- PostgreSQL, Redis, Elasticsearch, Qdrant, ClickHouse or object-storage data;
+- private Telegram datasets, exports or logs;
+- machine-learning model binaries, which are downloaded during installation as
+  described in [`src/atenea_api/models`](./src/atenea_api/models/README.md) and
+  [`src/atenea_services`](./src/atenea_services/README.md).
 
-3. Open the API documentation at `http://127.0.0.1:8000/swagger`.
+## Contributing
 
-4. Configure at least one Telegram API credential from the Django admin before using endpoints that extract data from Telegram.
-
-## Configuration
-
-Configuration is handled through environment variables. Use `.env.example` as the public template and keep local `.env.*` files private.
-
-The main configuration groups are:
-
-- Django: settings module, secret key, logging level, timezone, and auth.
-- PostgreSQL and Redis: relational storage and Celery broker.
-- Elasticsearch: keyword indexes and Kibana-backed analysis.
-- Qdrant: vector collections for semantic search and categorization.
-- S3-compatible object storage: optional binary preservation, metadata-only attachment cataloguing, presigned download URLs, file-size limits, and cleanup controls.
-- External URL catalogue: built-in provider whitelist plus optional domains configured through `MEDIA_EXTERNAL_URL_WHITELIST_EXTRA`.
-- OpenAI-compatible embeddings provider: OpenAI, vLLM, Ollama, or another compatible endpoint.
-- Microservices: NER and sentiment service hosts, ports, limits, and API keys.
-- Telegram API: credentials configured through the admin panel.
-
-See [`src/atenea_api/docs/enviroments.md`](./src/atenea_api/docs/enviroments.md) for the
-full list of variables and
-[`src/atenea_api/docs/configuration.md`](./src/atenea_api/docs/configuration.md) for
-first-time platform configuration.
-
-The end-to-end REST workflow is documented in
-[`src/atenea_api/docs/api_usage.md`](./src/atenea_api/docs/api_usage.md).
-
-## Reproducibility Notes
-
-This repository is intended to be published as research software. To reproduce a deployment, users should rely on the tracked source code, Docker compose files, requirements files, and `.env.example` templates.
-
-For privacy, security, and storage reasons, the public repository should not include:
-
-- `.env.dev`, `.env.prod`, or any environment file containing real values.
-- API keys, OAuth secrets, JWT secrets, Telegram sessions, or certificates.
-- PostgreSQL, Redis, Elasticsearch, or Qdrant data volumes.
-- Private Telegram datasets, exported CSV/JSON files, logs, or temporary analysis files.
-- Downloaded machine-learning model binaries unless their license and size make redistribution appropriate.
-
-External models and services must be downloaded or configured by the user during installation. Required model information is documented in [`src/atenea_api/models/README.md`](./src/atenea_api/models/README.md) and [`src/atenea_services/README.md`](./src/atenea_services/README.md).
-
-## License
-
-Atenea is distributed under the MIT License. See [`LICENSE`](./LICENSE) for the full license text.
+Contributions are welcome. Read the [contributing guidelines](./CONTRIBUTING.md)
+before you open a pull request.
 
 ## Citation
 
-If you use Atenea in academic work, please cite the accompanying SoftwareX paper. The full bibliographic reference and DOI will be added here once the article is published.
+If you use Atenea in academic work, please cite the SoftwareX article:
 
-Pending citation entry:
+> A. de Paz and D. Arroyo, "Atenea: An open-source platform for continuous
+> Telegram monitoring, NLP enrichment, and semantic retrieval," *SoftwareX*,
+> vol. 36, p. 103067, 2026. doi:
+> [10.1016/j.softx.2026.103067](https://doi.org/10.1016/j.softx.2026.103067)
 
 ```bibtex
-@article{atenea_softwarex,
-  title = {Atenea: A software platform for Telegram monitoring and analysis},
-  author = {de Paz, Alfonso and Arroyo, David},
+@article{DEPAZ2026103067,
+  title   = {Atenea: An open-source platform for continuous telegram monitoring, NLP enrichment, and semantic retrieval},
+  author  = {Alfonso {de Paz} and David Arroyo},
   journal = {SoftwareX},
-  year = {2026},
-  note = {Manuscript submitted or in preparation}
+  volume  = {36},
+  pages   = {103067},
+  year    = {2026},
+  issn    = {2352-7110},
+  doi     = {10.1016/j.softx.2026.103067},
+  url     = {https://www.sciencedirect.com/science/article/pii/S2352711026005583}
 }
 ```
+
+## License
+
+Atenea is distributed under the [MIT License](./LICENSE).

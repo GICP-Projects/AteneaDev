@@ -1,12 +1,12 @@
 services:
   ner-api:
     #container_name: api-ner # Custom name doesn't work with --scale
-    image: "gicp/atenea/ner:${ATENEA_VERSION:-v18.07.26}"
-    build: ./api_ner
+    image: "ghcr.io/srfonso/atenea-ner:${ATENEA_VERSION:?Set ATENEA_VERSION}"
     restart: unless-stopped
     #ports: # Custom external port doesn't work with --scale
     #  - 23540:8000
     environment:
+      ATENEA_VERSION: ${ATENEA_VERSION:?Set ATENEA_VERSION}
       NER_SERVICE_API_KEY: ${NER_SERVICE_API_KEY}
       MAX_DATA_BY_REQUEST: ${NER_SERVICE_MAX_DATA_BY_REQUEST}
     labels:

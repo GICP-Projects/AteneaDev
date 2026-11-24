@@ -4,8 +4,8 @@ from django.db import transaction
 from django.contrib.contenttypes.models import ContentType
 from django_elasticsearch_dsl import fields
 from django_elasticsearch_dsl.registries import registry
-from elasticsearch_dsl.field import Field, DenseVector
-from elasticsearch_dsl import normalizer
+from elasticsearch.dsl.field import Field, DenseVector
+from elasticsearch.dsl import normalizer
 from app_base.api import bulk_add_query_relationships_with_pks
 
 # Get an instance of a logger
@@ -280,4 +280,4 @@ def update_index(
                 pks, 
                 ContentType.objects.get_for_model(document.Django.model), 
                 token
-            ) 
+            )

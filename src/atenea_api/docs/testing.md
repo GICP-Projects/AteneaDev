@@ -10,7 +10,7 @@ The automated suite focuses on Atenea's core ingestion, collection, and ETL path
 - Media policy and storage orchestration already covered by the existing suite.
 - Frontend form metadata, periodic-task validation, and message statistics.
 
-PostgreSQL is the only real infrastructure dependency because the Django models use
+The default suite uses PostgreSQL as its real infrastructure dependency because the Django models use
 PostgreSQL-specific fields and query features. Telegram, Celery workers, Redis,
 Elasticsearch, Qdrant, S3, NER, sentiment, and embeddings providers are replaced by
 deterministic test doubles. The tests never use `_data` or `_prod_data`.
@@ -68,3 +68,13 @@ uv run pytest --cov --cov-report=term-missing --cov-report=xml
 ```
 
 The generated coverage files are local development artifacts and are ignored by Git.
+
+## Optional ClickHouse integration tests
+
+Start `docker-compose.test.yml` and run `uv run pytest --clickhouse`. The additional
+tests use only the ephemeral `atenea_test` database at 127.0.0.1:28124. Without
+that flag, tests marked `clickhouse` are skipped. They cover signed state before
+and after merges, metadata changes, deletions, lost acknowledgements, replay of
+pending insertion blocks, date precision and cursor ordering. See
+[message indexing](pipelines/telegram-index-messages.md) for the production
+write and recovery semantics.

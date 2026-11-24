@@ -72,11 +72,12 @@ def _upsert_batch_with_retry(
     retry_delay_seconds: int
         Base delay between retries. Delay is multiplied by the attempt number.
 
-    Raises
-    ------
-    Exception
-        Re-raises the last Qdrant error if the batch cannot be upserted and
-        can no longer be split (batch size equals 1).
+    Returns
+    -------
+    tuple[list[dict], list[dict]]
+        Points successfully persisted and points that still failed after local
+        retries/splitting.  This lets a durable job record the exact failed
+        elements without treating already-synced siblings as failures.
 
     Notes
     -----
@@ -90,12 +91,14 @@ def _upsert_batch_with_retry(
     last_error = None
     for attempt in range(1, max_attempts + 1):
         try:
-            client.upsert(
+            result = client.upsert(
                 collection_name=collection_name,
                 points=_build_point_structs(models, points),
-                wait=True,
+                wait=True, ordering="strong",
             )
-            return
+            if getattr(result.status, "value", result.status) != "completed":
+                raise RuntimeError("Qdrant has not confirmed application of the vectors")
+            return points, []
         except Exception as exc:
             last_error = exc
             root_error = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
@@ -113,7 +116,12 @@ def _upsert_batch_with_retry(
                 time.sleep(retry_delay_seconds * attempt)
 
     if len(points) <= 1:
-        raise last_error
+        logger.error(
+            "Qdrant upsert permanently failed for point(s) in '%s': %r",
+            collection_name,
+            last_error,
+        )
+        return [], points
 
     split_index = len(points) // 2
     left_points = points[:split_index]
@@ -124,7 +132,7 @@ def _upsert_batch_with_retry(
         len(left_points),
         len(right_points),
     )
-    _upsert_batch_with_retry(
+    left_succeeded, left_failed = _upsert_batch_with_retry(
         client=client,
         models=models,
         collection_name=collection_name,
@@ -132,7 +140,7 @@ def _upsert_batch_with_retry(
         max_retries=max_retries,
         retry_delay_seconds=retry_delay_seconds,
     )
-    _upsert_batch_with_retry(
+    right_succeeded, right_failed = _upsert_batch_with_retry(
         client=client,
         models=models,
         collection_name=collection_name,
@@ -140,6 +148,7 @@ def _upsert_batch_with_retry(
         max_retries=max_retries,
         retry_delay_seconds=retry_delay_seconds,
     )
+    return left_succeeded + right_succeeded, left_failed + right_failed
 
 
 def _import_qdrant():
@@ -243,6 +252,12 @@ def ensure_collection(collection_name, vector_size):
         ),
         **create_collection_kwargs,
     )
+    client.create_payload_index(
+        collection_name=collection_name,
+        field_name="room_id",
+        field_schema=models.PayloadSchemaType.KEYWORD,
+        wait=True,
+    )
     logger.info("Created Qdrant collection '%s'.", collection_name)
 
 
@@ -269,7 +284,7 @@ def upsert_points(collection_name, points, vector_size):
     """
     points = list(points)
     if not points:
-        return
+        return {"succeeded_point_ids": [], "failed_point_ids": []}
 
     client = get_qdrant_client()
     _, models = _import_qdrant()
@@ -278,6 +293,8 @@ def upsert_points(collection_name, points, vector_size):
     retry_delay_seconds = settings.QDRANT.upsert_retry_delay_seconds
     ensure_collection(collection_name, vector_size)
     total_batches = (len(points) + batch_size - 1) // batch_size
+    succeeded_point_ids = []
+    failed_point_ids = []
     for batch_index, batch_start in enumerate(range(0, len(points), batch_size), start=1):
         batch = points[batch_start:batch_start + batch_size]
         batch_time = time.time()
@@ -288,7 +305,7 @@ def upsert_points(collection_name, points, vector_size):
             collection_name,
             len(batch),
         )
-        _upsert_batch_with_retry(
+        succeeded, failed = _upsert_batch_with_retry(
             client=client,
             models=models,
             collection_name=collection_name,
@@ -296,6 +313,8 @@ def upsert_points(collection_name, points, vector_size):
             max_retries=max_retries,
             retry_delay_seconds=retry_delay_seconds,
         )
+        succeeded_point_ids.extend(str(point["id"]) for point in succeeded)
+        failed_point_ids.extend(str(point["id"]) for point in failed)
         logger.info(
             "Qdrant upsert batch %s/%s to '%s' finished in %.3f secs.",
             batch_index,
@@ -303,6 +322,10 @@ def upsert_points(collection_name, points, vector_size):
             collection_name,
             time.time() - batch_time,
         )
+    return {
+        "succeeded_point_ids": succeeded_point_ids,
+        "failed_point_ids": failed_point_ids,
+    }
 
 
 def delete_points(collection_name, point_ids):

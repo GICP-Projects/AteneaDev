@@ -1,4 +1,20 @@
 services:
+  clickhouse-test:
+    image: ${CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:26.8}
+    environment:
+      CLICKHOUSE_DB: atenea_test
+      CLICKHOUSE_USER: atenea_test
+      CLICKHOUSE_PASSWORD: atenea-test-only
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "127.0.0.1:28124:8123"
+    tmpfs:
+      - /var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "atenea_test", "--password", "atenea-test-only", "--query", "SELECT 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
   postgres-test:
     image: postgres:15-bookworm
     environment:

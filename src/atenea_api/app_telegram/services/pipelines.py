@@ -1,17 +1,21 @@
 from app_telegram.models import SeedItem, TelegramAuth, RoomItem, UserItem, MessageItem
-from app_telegram.services.telegram import (
-    items_to_index, 
-    access_entities,
-    populate_seeds, 
-    scan_rooms, 
-    scan_comments,
-    postprocess_msgs
+from app_telegram.services.jobs import (
+    create_access_job_from_queryset,
+    create_manual_index_job,
+    create_populate_job_from_queryset,
+    create_scan_jobs_from_queryset,
+    create_scan_comments_jobs,
 )
-from app_entity.services.ner import ner_db_store
 from app_telegram.serializers import ANY as TAG_ANY
-from app_base.api import create_advance_filter, bulk_add_query_relationships_with_pks
+from app_base.api import (
+    array_tag_filter_kwargs,
+    create_advance_filter,
+    bulk_add_query_relationships_with_pks,
+)
 from celery.app import shared_task
 from celery import group, chord, chain
+from celery.canvas import Signature
+from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.utils import timezone
 from django.db.models import Prefetch
@@ -100,11 +104,23 @@ def run_generic_pipeline(
         extra_args
     )
 
-    # Execute pipeline 
+    # Execute pipeline.  A pre-built Signature is useful for durable job
+    # callbacks because it already contains the Job UUID after the chord result.
     if callback_task_func:
-        chord(group(tasks))(callback_task_func.s())
+        callback_signature = (
+            callback_task_func
+            if isinstance(callback_task_func, Signature)
+            else callback_task_func.s()
+        )
+        if tasks:
+            chord(group(tasks))(callback_signature)
+        else:
+            # A queryset can have rooms but no usable Telegram credential.  The
+            # live Job must still be sealed rather than remain collecting forever.
+            callback_signature.apply_async(args=[[]])
     else:
-        group(tasks).apply_async()
+        if tasks:
+            group(tasks).apply_async()
 
     """
     if extra_args.get('token'):
@@ -338,7 +354,8 @@ def index_msgs_pipeline(
     lang = [], 
     type = [],
     block_size = 500000,
-    token = None
+    token = None,
+    scheduler_context = None,
 ):
     """ MessageItem Indexation pipeline wrapper.
     It initializes the pipeline to index the messages that fits the filter.
@@ -395,20 +412,22 @@ def index_msgs_pipeline(
         "is_reply": is_reply
     }
 
-    items_to_index.delay(
-        query_filter_by_model={
-            MessageItem.__name__: {
-                "and_filter_fields": and_filter_fields,
-                "list_filter_fields": {
-                    "room__unique_name__iexact": {"values": [r.strip() for r in room], "OR": True},
-                    "room__tags__icontains": {"values": tags, "OR": tag_match == TAG_ANY},
-                }
-            }
+    job, _ = create_manual_index_job(
+        filters={
+            "room": room,
+            "tags": tags,
+            "tag_match": tag_match,
+            "is_reply": is_reply,
+            "createdat_min": createdat_min,
+            "createdat_max": createdat_max,
+            "stored_since": stored_since,
+            "lang": lang,
+            "type": type,
         },
-        apply_distinct=False, # No risk of duplicatos given the filters used
-        block_size=block_size,
-        token=token
+        request_token=token,
+        lifecycle_policy=scheduler_context,
     )
+    return str(job.id)
 
 
 # ==========================================================
@@ -426,7 +445,8 @@ def populate_pipeline(
     type = [],
     collected_min=None, 
     collected_max=None,
-    token = None
+    token = None,
+    scheduler_context = None,
 ):
     """ Populated pipeline wrapper.
     It initializes the pipeline to populate the seed items that fits the filter.
@@ -461,9 +481,9 @@ def populate_pipeline(
         End of the datetime interval
 
     Returns
-    ----------
-    items_count: int
-        Number of items to be processed.
+    -------
+    dict
+        The number of selected seeds and the durable ProcessingJob ID.
     """
 
     # Get items to process
@@ -479,26 +499,30 @@ def populate_pipeline(
                     "lang__in": lang,
                     "is_valid": True,
                     "is_seeded": False,
+                    **array_tag_filter_kwargs("tags", tags, tag_match),
                 }, 
-                list_filter_fields={
-                    "tags__icontains": {"values": tags, "OR": tag_match == TAG_ANY}
-                }
             )
         )
         #.distinct("pk") Ignoring, there is no risk of duplicates with the current filters.
-        .order_by("pk") # Order to allow Queryset slicing
-        .values_list("pk", flat=True) # Only the primary keys are sent to the pipeline
+        .order_by("pk")
     )
-
-    items_count = run_generic_pipeline(
-        main_task_func=populate_seeds,
-        queryset=queryset,
-        load_balancer_func=load_balancer_split_by_auth,
-        callback_task_func=items_to_index,
-        extra_args={'token': token},
+    job, _ = create_populate_job_from_queryset(
+        queryset,
+        filters={
+            "by_resource": by_resource,
+            "by_title": by_title,
+            "tags": tags,
+            "tag_match": tag_match,
+            "lang": lang,
+            "type": type,
+            "collected_min": collected_min,
+            "collected_max": collected_max,
+        },
+        request_token=token,
+        lifecycle_policy=scheduler_context,
     )
-    
-    return items_count
+    job.refresh_from_db(fields=["total_items"])
+    return {"items_count": job.total_items, "job_id": str(job.id)}
 
 @shared_task(track_started=True)
 def scan_pipeline(
@@ -511,7 +535,9 @@ def scan_pipeline(
     lastup_max = None,
     max_msgs = 2500,
     update_users = False,
-    token = None
+    token = None,
+    scheduler_context = None,
+    check_room = False,
 ):
     """ Scan pipeline wrapper.
     It initializes the pipeline to scan the room items that fits the filter.
@@ -553,9 +579,9 @@ def scan_pipeline(
         To allow already existing users to be updated.
 
     Returns
-    ----------
-    items_count: int
-        Number of items to be processed.
+    -------
+    dict
+        The number of selected rooms and the durable ProcessingJob ID.
     """
 
     # Get items to process
@@ -572,31 +598,37 @@ def scan_pipeline(
                     "is_valid": True,
                     "is_private": False,
                     "is_deleted": False,
-                    "following": True
+                    "following": True,
+                    **array_tag_filter_kwargs("tags", tags, tag_match),
                 }, 
                 list_filter_fields={
                     "unique_name__iexact": {"values": [r.strip() for r in room], "OR": True},
-                    "tags__icontains": {"values": tags, "OR": tag_match == TAG_ANY}
                 }
             )
         )
         .order_by("pk") # Order to allow Queryset slicing
     )
 
-    items_count = run_generic_pipeline(
-        main_task_func=scan_rooms,
+    root, child, _ = create_scan_jobs_from_queryset(
         queryset=queryset,
-        load_balancer_func=load_balancer_group_pks_by_auth,
-        tasks_signatures_to_chain=[
-            postprocess_msgs.s(), 
-            ner_db_store.s(MessageItem.__name__, MessageItem._meta.app_label)
-        ],
-        callback_task_func=items_to_index,
-        extra_args={'token': token, 'max_msgs': max_msgs, 'update_existing_users': update_users},
+        filters={
+            "room": room,
+            "tags": tags,
+            "tag_match": tag_match,
+            "lang": lang,
+            "is_channel": is_channel,
+            "lastup_min": lastup_min,
+            "lastup_max": lastup_max,
+        },
+        options={"max_msgs": max_msgs, "update_existing_users": update_users, "check_room": check_room},
+        request_token=token,
+        lifecycle_policy=scheduler_context,
     )
-    return items_count
+    root.refresh_from_db(fields=["total_items"])
+    return {"items_count": root.total_items, "job_id": str(root.id), "message_job_id": str(child.id)}
 
 
+@shared_task(track_started=True)
 def scan_comments_pipeline(
     room = [], 
     tags = [],
@@ -607,11 +639,14 @@ def scan_comments_pipeline(
     createdat_max = None,
     stored_since = None,
     max_msgs = 2500,
-    total_msgs = 1250000,
-    token = None
+    token = None,
+    scheduler_context = None,
 ):
-    """ Scan comments pipeline wrapper.
-    It initializes the pipeline to scan comments from the messages that fits the filter.
+    """Launch a cursor-driven comments root and its LIVE processing child.
+
+    Persist selected room IDs, publication/ingestion filters and a source time
+    boundary. No comments are extracted here. Configuration and database errors
+    propagate; scheduler_context supplies an optional schedule lifecycle policy.
 
     NOTE: Required wrapper to allow running this task with celery beat, in addition to 
     maintaining the scan comments endpoint.
@@ -650,14 +685,13 @@ def scan_comments_pipeline(
     max_msgs: int, default=2500
         Max number of comments they will be extracted per message.
 
-    total_msgs: int, default=1250000
-        Total number of messages to be extracted globally. In order to avoid an 
-        out-of-control usage of resources
-
     Returns
     ----------
     items_count: int
-        number of rooms whose messages, which meet the filters, will be processed.
+        Number of selected parent messages at launch (the source estimate).
+    rooms_count: int
+        Number of selected rooms; job_id and message_job_id identify the root
+        and its child. Job counters measure only materialized batch input.
     """
     # Get items to process
     queryset = (
@@ -669,11 +703,11 @@ def scan_comments_pipeline(
                     "is_valid": True,
                     "is_private": False,
                     "is_deleted": False,
-                    "following": True
+                    "following": True,
+                    **array_tag_filter_kwargs("tags", tags, tag_match),
                 }, 
                 list_filter_fields={
                     "unique_name__iexact": {"values": [r.strip() for r in room], "OR": True},
-                    "tags__icontains": {"values": tags, "OR": tag_match == TAG_ANY}
                 }
             )
         )
@@ -693,23 +727,32 @@ def scan_comments_pipeline(
         },
     }
 
-    items_count = run_generic_pipeline(
-        main_task_func=scan_comments,
-        queryset=queryset,
-        load_balancer_func=load_balancer_group_pks_by_auth,
-        tasks_signatures_to_chain=[
-            postprocess_msgs.s(), 
-            ner_db_store.s(MessageItem.__name__, MessageItem._meta.app_label)
-        ],
-        callback_task_func=items_to_index,
-        extra_args={
-            'token': token, 
-            'message_filters': message_filters, 
-            'max_msgs': max_msgs,
-            'total_msgs': total_msgs
+    rooms = list(queryset.filter(access_auth__is_valid=True).values_list("id", flat=True))
+    root, child, _ = create_scan_comments_jobs(
+        room_ids=[str(room_id) for room_id in rooms],
+        filters={
+            "room": room,
+            "tags": tags,
+            "tag_match": tag_match,
+            "langs": langs,
+            "types": types,
+            "createdat_min": createdat_min,
+            "createdat_max": createdat_max,
+            "stored_since": stored_since,
         },
+        options={
+            "message_filters": message_filters,
+            "max_msgs": max_msgs,
+        },
+        request_token=token,
+        lifecycle_policy=scheduler_context,
     )
-    return items_count
+    return {
+        "items_count": root.filters["selected_items_count"],
+        "rooms_count": len(rooms),
+        "job_id": str(root.id),
+        "message_job_id": str(child.id),
+    }
 
 
 @shared_task(track_started=True)
@@ -721,13 +764,14 @@ def access_room_pipeline(
     is_channel = None,
     lastup_min = None,
     lastup_max = None,
-    token = None
+    token = None,
+    scheduler_context = None,
 ):
-    """ Scan pipeline wrapper.
-    It initializes the pipeline to scan the room items that fits the filter.
+    """Start a durable access-hash recovery Job for matching rooms.
 
-    NOTE: Required wrapper to allow running this task with celery beat, in addition to 
-    maintaining the scan endpoint.
+    The matching RoomItem IDs are divided among currently usable Telegram
+    credentials and stored in ProcessingBatch rows. The worker receives only
+    each batch ID, then loads the rooms and credential from PostgreSQL.
 
     Parameters
     ----------
@@ -757,11 +801,11 @@ def access_room_pipeline(
         Interval start date for the last_update field
 
     Returns
-    ----------
-    items_count: int
-        Number of items to be processed.
+    -------
+    dict
+        The number of selected rooms and the durable ProcessingJob ID.
     """
-    # Get items to process
+    # Only rooms orphaned from a valid Telegram credential can be repaired.
     queryset = (
         RoomItem.objects.filter(
             create_advance_filter(
@@ -774,23 +818,30 @@ def access_room_pipeline(
                     # Only allowed Rooms
                     "is_valid": False,
                     "following": True,
-                    "is_deleted": False
+                    "is_deleted": False,
+                    **array_tag_filter_kwargs("tags", tags, tag_match),
                 }, 
                 list_filter_fields={
                     "unique_name__iexact": {"values": [r.strip() for r in room], "OR": True},
-                    "tags__icontains": {"values": tags, "OR": tag_match == TAG_ANY}
                 }
             )
         )
-        .order_by("pk") # Order to allow Queryset slicing
-        .values_list("pk", flat=True) # Only the primary keys are sent to the pipeline
+        .order_by("pk")
     )
 
-    items_count = run_generic_pipeline(
-        main_task_func=access_entities,
-        queryset=queryset,
-        load_balancer_func=load_balancer_split_by_auth,
-        extra_args={'model_class_name': RoomItem.__name__, 'token': token},
+    job, _ = create_access_job_from_queryset(
+        queryset,
+        filters={
+            "room": room,
+            "tags": tags,
+            "tag_match": tag_match,
+            "lang": lang,
+            "is_channel": is_channel,
+            "lastup_min": lastup_min,
+            "lastup_max": lastup_max,
+        },
+        request_token=token,
+        lifecycle_policy=scheduler_context,
     )
-    
-    return items_count
+    job.refresh_from_db(fields=["total_items"])
+    return {"items_count": job.total_items, "job_id": str(job.id)}

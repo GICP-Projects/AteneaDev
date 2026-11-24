@@ -6,6 +6,7 @@ from rest_framework.request import Request
 from rest_framework.test import APIRequestFactory
 from django.test import TestCase, override_settings
 from django.utils import timezone
+from rest_framework.parsers import JSONParser
 
 from app_base.views import parse_request_data
 from app_telegram.models import MessageItem, RoomItem, TelegramAuth, TelegramExternalUrlItem, TelegramMediaItem
@@ -199,11 +200,14 @@ class MediaDownloadSerializerTests(TestCase):
         self.assertTrue(serializer.is_valid(), serializer.errors)
         self.assertFalse(serializer.validated_data["metadata_only"])
 
-    def test_metadata_only_accepts_query_boolean(self):
+    def test_metadata_only_accepts_json_boolean(self):
         request = Request(
-            APIRequestFactory().get(
-                "/api/v1/tg/msg/media/download?metadata_only=true&room=canal_media"
-            )
+            APIRequestFactory().post(
+                "/api/v1/tg/msg/media/download",
+                {"metadata_only": True, "room": ["canal_media"]},
+                format="json",
+            ),
+            parsers=[JSONParser()],
         )
 
         params, _ = parse_request_data(

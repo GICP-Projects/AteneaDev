@@ -1,0 +1,29 @@
+{% load i18n %}
+{% translate "Input to" as input_direction %}
+{% translate "Output from" as output_direction %}
+{% translate "Processed by" as processed_direction %}
+{% for metric in metrics %}
+<button
+    type="button"
+    class="dag-metric"
+    data-dag-tooltip="{{ metric.label }}: {{ metric.value }} {{ metric.unit }} · {% if metric.direction == 'input' %}{{ input_direction }}{% elif metric.direction == 'processed' %}{{ processed_direction }}{% else %}{{ output_direction }}{% endif %} {{ metric.context_stage_label }}{% if metric.shared_input_stage_label %} · {{ input_direction }} {{ metric.shared_input_stage_label }}: {{ metric.shared_input_value }} {{ metric.shared_input_unit }}{% endif %}{% if metric.count == None %} · {% translate 'Count unavailable in summary' %}{% elif metric.shared_input_stage_label and metric.shared_input_count == None %} · {% translate 'Count unavailable in summary' %}{% endif %}"
+    aria-label="{{ metric.label }}: {{ metric.value }} {{ metric.unit }} · {% if metric.direction == 'input' %}{{ input_direction }}{% elif metric.direction == 'processed' %}{{ processed_direction }}{% else %}{{ output_direction }}{% endif %} {{ metric.context_stage_label }}{% if metric.shared_input_stage_label %} · {{ input_direction }} {{ metric.shared_input_stage_label }}: {{ metric.shared_input_value }} {{ metric.shared_input_unit }}{% endif %}{% if metric.count == None %} · {% translate 'Count unavailable in summary' %}{% elif metric.shared_input_stage_label and metric.shared_input_count == None %} · {% translate 'Count unavailable in summary' %}{% endif %}"
+    {% if forloop.counter > 2 %}hidden data-dag-metric-overflow aria-hidden="true"{% endif %}
+>
+    {% include "app_dashboard/jobs/_metric_icon.html" with metric=metric icon_class="dag-metric-icon" %}
+    {% if metric.destination %}<span>{{ metric.destination }}</span>{% endif %}
+    <strong>{% if metric.shared_input_stage_label and not metric.shared_input_same_value %}{{ metric.compact_value }}→{{ metric.shared_input_compact_value }}{% else %}{{ metric.compact_value }}{% endif %}</strong>
+</button>
+{% endfor %}
+{% if metrics|length > 2 %}
+<button
+    type="button"
+    class="dag-metric-more"
+    data-dag-metric-more
+    data-more-count="{{ metrics|length|add:'-2' }}"
+    data-more-label="{% blocktranslate count count=metrics|length|add:'-2' %}Show {{ count }} more metric{% plural %}Show {{ count }} more metrics{% endblocktranslate %}"
+    data-collapse-label="{% translate 'Show fewer metrics' %}"
+    aria-expanded="false"
+    aria-label="{% blocktranslate count count=metrics|length|add:'-2' %}Show {{ count }} more metric{% plural %}Show {{ count }} more metrics{% endblocktranslate %}"
+>+{{ metrics|length|add:"-2" }}</button>
+{% endif %}

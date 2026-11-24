@@ -16,8 +16,9 @@ from telethon.errors import AuthKeyError, FloodWaitError, RPCError
 from telethon.sessions import StringSession
 from telethon.tl.types import InputPeerChannel
 
-from app_base.api import create_advance_filter
+from app_base.api import array_tag_filter_kwargs, create_advance_filter
 from app_entity.models import AnnotatedEntity, EntityItem
+from app_entity.enums import EntityType
 from app_telegram.models import (
     MessageItem,
     RoomItem,
@@ -93,15 +94,12 @@ def _message_filter(
             "stored_date__gte": stored_since,
             "lang__in": lang or [],
             "is_reply": is_reply,
+            **array_tag_filter_kwargs("room__tags", tags, tag_match),
         },
         list_filter_fields={
             "room__unique_name__iexact": {
                 "values": [r.strip() for r in (room or [])],
                 "OR": True,
-            },
-            "room__tags__icontains": {
-                "values": tags or [],
-                "OR": tag_match == TAG_ANY,
             },
         },
     )
@@ -523,7 +521,7 @@ def collect_external_urls(messages_pk, use_text_fallback=True):
         AnnotatedEntity.objects.filter(
             content_type=msg_content_type,
             object_id__in=list(msg_by_pk.keys()),
-            entity__type=EntityItem.URL,
+            entity__type=EntityType.URL,
         )
         .select_related("entity")
         .values("object_id", "entity__name")

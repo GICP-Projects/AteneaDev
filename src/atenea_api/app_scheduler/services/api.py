@@ -1,52 +1,54 @@
-from app_base.api import create_advance_filter
-from django_celery_beat.models import (
-    PeriodicTask,
-    IntervalSchedule,
-    ClockedSchedule,
-    CrontabSchedule
+"""Database access for public pipeline triggers backed by django-celery-beat."""
+
+from django_celery_beat.models import PeriodicTask
+
+from app_scheduler.registry import (
+    get_scheduled_pipeline,
+    get_scheduled_pipeline_task_names,
 )
 
 
+def _registered_task_names() -> list[str]:
+    return get_scheduled_pipeline_task_names()
 
-# ==================================================================
-#               Scheduler endpoints handlers
-# ==================================================================
 
-def search(
-    task = None,
-    name = None,
-    description = None,
-    schedule_type = None
+def public_trigger_queryset():
+    """Return only Beat rows that represent registered public pipelines."""
+
+    return PeriodicTask.objects.filter(task__in=_registered_task_names()).select_related(
+        "interval", "crontab", "clocked"
+    )
+
+
+def search_triggers(
+    *,
+    pipeline=None,
+    name=None,
+    description=None,
+    schedule_type=None,
+    enabled=None,
 ):
-    """Search for scheduled tasks.
+    """Return only Beat rows whose task is a registered Job-creating launcher."""
 
-    Parameters
-    ----------
-    task: str, default=None
-        Scheduled task.
+    queryset = public_trigger_queryset()
+    if pipeline:
+        queryset = queryset.filter(task=get_scheduled_pipeline(pipeline).task)
+    if name:
+        queryset = queryset.filter(name__icontains=name)
+    if description:
+        queryset = queryset.filter(description__icontains=description)
+    if schedule_type:
+        queryset = queryset.filter(**{f"{schedule_type}__isnull": False})
+    if enabled is not None:
+        queryset = queryset.filter(enabled=enabled)
+    return queryset.order_by("name")
 
-    name: str, default=None
-        Name for this scheduling.
 
-    description: str, default=None
-        Description for this scheduling.
+def get_trigger(trigger_id):
+    """Get an API-manageable trigger; internal Beat tasks deliberately 404."""
 
-    schedule_type: str, default=None
-        Filter scheduled tasks by the scheduling method ('interval' or 'crontab').
-
-    Returns
-    -------
-    queryset: QuerySet[PeriodicTask]
-        A queryset of scheduled tasks.
-    """
-    return PeriodicTask.objects.filter(
-        create_advance_filter(
-            and_filter_fields={
-                "task__iexact": task,
-                "name__icontains": name,
-                "description__icontains": description,
-                # None to ignore this filter
-                f"{schedule_type}__isnull": False if schedule_type else None
-            }
-        )
-    ).order_by('name')
+    try:
+        trigger_id = int(trigger_id)
+    except (TypeError, ValueError) as exc:
+        raise PeriodicTask.DoesNotExist from exc
+    return public_trigger_queryset().get(pk=trigger_id)

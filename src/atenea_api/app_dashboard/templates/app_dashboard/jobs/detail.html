@@ -1,0 +1,116 @@
+{% extends "app_dashboard/base.html" %}
+{% load static i18n %}
+{% block title %}{% translate "Job" %} {{ job.id|slice:':8' }}{% endblock %}
+{% block content %}
+<div class="page-heading job-page-heading">
+    <div>
+        <p class="eyebrow">{{ job.label }}</p>
+        <h1>{% translate "Job" %} {{ job.id|slice:':8' }}</h1>
+    </div>
+    <div class="job-heading-side">
+        <div class="heading-status">{% include "app_dashboard/components/status_badge.html" with status=job.status %}</div>
+        {% if can_pause or can_resume or can_cancel or can_discard %}
+        <aside class="job-actions-panel" aria-labelledby="actions-title">
+            <div class="job-actions-heading"><p class="eyebrow">{% translate "Control" %}</p><h2 id="actions-title">{% translate "Actions" %}</h2></div>
+            <div class="action-row">
+                {% if can_pause %}<form method="post" action="{% url 'app_dashboard:job-action' job.object.pk 'pause' %}">{% csrf_token %}<button class="button" type="submit">{% translate "Pause" %}</button></form>{% endif %}
+                {% if can_resume %}<form method="post" action="{% url 'app_dashboard:job-action' job.object.pk 'resume' %}">{% csrf_token %}<button class="button" type="submit">{% translate "Resume" %}</button></form>{% endif %}
+                {% if can_cancel %}<form method="post" action="{% url 'app_dashboard:job-action' job.object.pk 'cancel' %}" data-confirm="{% translate 'Cancel this Job and its derived operations?' %}">{% csrf_token %}<button class="button button-danger" type="submit">{% translate "Cancel" %}</button></form>{% endif %}
+                {% if can_discard %}<form method="post" action="{% url 'app_dashboard:job-action' job.object.pk 'discard-failed' %}" data-confirm="{% translate 'Discard failed batches and continue with partial input?' %}">{% csrf_token %}<button class="button button-warning" type="submit">{% translate "Discard failed and continue" %}</button></form>{% endif %}
+            </div>
+        </aside>
+        {% endif %}
+    </div>
+</div>
+
+<dl class="job-timestamps job-detail-dates" aria-label="{% translate 'Job dates' %}">
+    <div><dt>{% translate "Started" %}</dt><dd>{% if job.started_at %}{{ job.started_at|date:"d/m/Y H:i:s" }}{% else %}{% translate "Not started" %}{% endif %}</dd></div>
+    <div><dt>{% translate "Finished" %}</dt><dd>{% if job.completed_at %}{{ job.completed_at|date:"d/m/Y H:i:s" }}{% else %}{% translate "Not finished" %}{% endif %}</dd></div>
+</dl>
+{% if job.input_outcome == "partial" %}<p class="muted">{% translate "Input was partial: some upstream failed batches were discarded." %}</p>{% endif %}
+
+<div id="job-live" data-live-url="{% url 'app_dashboard:job-live' job.object.pk %}" data-active="{{ graph.active|yesno:'true,false' }}">
+    {% include "app_dashboard/jobs/_live.html" %}
+</div>
+
+<details class="panel job-input-summary">
+    <summary class="job-input-summary-toggle">
+        <span class="job-input-summary-label"><span class="eyebrow">{% translate "Input" %}</span><strong id="filters-title">{% translate "Selection criteria" %}</strong></span>
+        <span class="job-input-summary-mark" aria-hidden="true"></span>
+    </summary>
+    <div class="job-input-summary-body">
+    {% if job.filters %}
+    <dl class="compact-stats filter-summary">
+        {% for criterion in job.filters %}<div><dt>{{ criterion.label }}</dt><dd>{{ criterion.value }}</dd></div>{% endfor %}
+    </dl>
+    {% else %}<p class="muted">{% translate "This operation has no additional criteria." %}</p>{% endif %}
+    </div>
+</details>
+
+<section class="panel" aria-labelledby="graph-title">
+    <div class="panel-heading"><div><p class="eyebrow">{% translate "Execution" %}</p><h2 id="graph-title">{% translate "Job flow" %}</h2></div></div>
+    <div id="job-graph" data-dag-fullscreen-host data-graph-url="{% url 'app_dashboard:job-graph' job.object.pk %}">
+        {% include "app_dashboard/jobs/_graph.html" %}
+    </div>
+</section>
+
+
+<details class="technical-details">
+    <summary>{% translate "Technical information" %}</summary>
+    <dl class="technical-list">
+        <div><dt>{% translate "Identifier" %}</dt><dd><code>{{ job.id }}</code></dd></div>
+        <div><dt>{% translate "Internal processor" %}</dt><dd><code>{{ job.technical.processor }}</code></dd></div>
+        <div><dt>{% translate "Internal mode" %}</dt><dd><code>{{ job.technical.mode }}</code></dd></div>
+        <div><dt>{% translate "Internal stages" %}</dt><dd><code>{{ job.technical.workflow|join:", " }}</code></dd></div>
+        <div><dt>{% translate "Batch size" %}</dt><dd>{{ job.technical.batch_size }}</dd></div>
+        <div><dt>{% translate "Maximum concurrency" %}</dt><dd>{{ job.technical.max_inflight_batches }}</dd></div>
+    </dl>
+</details>
+
+<dialog class="dag-detail-dialog" data-batch-detail-dialog aria-labelledby="dag-detail-title"
+    data-batch-title="{% translate 'Batch details' %}"
+    data-stage-title="{% translate 'Stage details' %}"
+    data-label-status="{% translate 'Status' %}"
+    data-label-context="{% translate 'Batch context' %}"
+    data-label-stage-context="{% translate 'Stage context' %}"
+    data-label-job="{% translate 'Job' %}"
+    data-label-current-stage="{% translate 'Current stage' %}"
+    data-label-created="{% translate 'Created' %}"
+    data-label-finished="{% translate 'Finished' %}"
+    data-label-updated="{% translate 'Updated' %}"
+    data-label-counts="{% translate 'Batch counters' %}"
+    data-label-dependencies="{% translate 'Dependencies' %}"
+    data-label-transfer="{% translate 'Transfer' %}"
+    data-label-stages="{% translate 'Results by stage' %}"
+    data-label-last-error="{% translate 'Latest error' %}"
+    data-label-attempts="{% translate 'Attempts' %}"
+    data-label-inputs="{% translate 'Inputs' %}"
+    data-label-processed="{% translate 'Processed' %}"
+    data-label-outputs="{% translate 'Outputs' %}"
+    data-label-skipped="{% translate 'Excluded' %}"
+    data-label-failed="{% translate 'Failed' %}"
+    data-label-metadata="{% translate 'Metadata' %}"
+    data-label-back="{% translate 'Back to Batch' %}"
+    data-label-close="{% translate 'Close details' %}"
+    data-label-no-data="{% translate 'No summary data available.' %}"
+    data-label-loading="{% translate 'Loading batch details…' %}"
+    data-label-load-error="{% translate 'Could not load batch details. Close and reopen to try again.' %}"
+    data-label-unavailable="{% translate 'This item is no longer available in the refreshed graph.' %}"
+    data-label-unavailable-count="{% translate 'Count unavailable in summary' %}"
+>
+    <div class="dag-detail-frame">
+        <header class="dag-detail-header">
+            <button type="button" class="button dag-detail-back" data-dialog-back hidden aria-label="{% translate 'Back to Batch' %}" title="{% translate 'Back to Batch' %}">←</button>
+            <div class="dag-detail-heading">
+                <p class="eyebrow" data-dialog-kicker>{% translate "Batch" %}</p>
+                <h2 id="dag-detail-title" data-dialog-title></h2>
+                <span class="dag-detail-live-status" data-dialog-live-status role="status" aria-live="polite"></span>
+            </div>
+            <div class="dag-detail-header-actions">
+                <button type="button" class="dag-detail-close" data-dialog-close aria-label="{% translate 'Close details' %}">×</button>
+            </div>
+        </header>
+        <div class="dag-detail-body" data-dialog-body tabindex="0"></div>
+    </div>
+</dialog>
+{% endblock %}

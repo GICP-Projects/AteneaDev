@@ -1,0 +1,1625 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: Atenea dashboard\n"
+"Language: es\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "Collecting"
+msgstr "Recopilando"
+
+msgid "Running"
+msgstr "En ejecución"
+
+msgid "Paused"
+msgstr "Pausado"
+
+msgid "Cancelling"
+msgstr "Cancelando"
+
+msgid "Completed"
+msgstr "Completado"
+
+msgid "Failed"
+msgstr "Con errores"
+
+msgid "Cancelled"
+msgstr "Cancelado"
+
+msgid "Pending"
+msgstr "Pendiente"
+
+msgid "Retrying"
+msgstr "Reintentando"
+
+msgid "Detect entities"
+msgstr "Detectar entidades"
+
+msgid "Generate embeddings"
+msgstr "Generar embeddings"
+
+msgid "Analyze sentiment"
+msgstr "Analizar sentimiento"
+
+msgid "Collect Telegram messages"
+msgstr "Recopilar mensajes de Telegram"
+
+msgid "Collect comments"
+msgstr "Recopilar comentarios"
+
+msgid "Recover room access"
+msgstr "Recuperar acceso a salas"
+
+msgid "Populate Telegram resources"
+msgstr "Poblar recursos de Telegram"
+
+msgid "Index messages"
+msgstr "Indexar mensajes"
+
+msgid "Process messages"
+msgstr "Procesar mensajes"
+
+msgid "Resolve room access"
+msgstr "Resolver acceso a salas"
+
+msgid "Resolve resources"
+msgstr "Resolver recursos"
+
+msgid "Index resources"
+msgstr "Indexar recursos"
+
+msgid "Store entities"
+msgstr "Guardar entidades"
+
+msgid "Rooms"
+msgstr "Salas"
+
+msgid "Messages"
+msgstr "Mensajes"
+
+msgid "Seeds"
+msgstr "Semillas"
+
+msgid "Tags"
+msgstr "Etiquetas"
+
+msgid "Tag matching"
+msgstr "Coincidencia de etiquetas"
+
+msgid "Languages"
+msgstr "Idiomas"
+
+msgid "Message types"
+msgstr "Tipos de mensaje"
+
+msgid "Replies only"
+msgstr "Solo respuestas"
+
+msgid "Stored since"
+msgstr "Almacenados desde"
+
+msgid "Created from"
+msgstr "Creados desde"
+
+msgid "Created until"
+msgstr "Creados hasta"
+
+msgid "Block size"
+msgstr "Tamaño de bloque"
+
+msgid "Maximum messages"
+msgstr "Máximo de mensajes"
+
+msgid "Total messages"
+msgstr "Mensajes totales"
+
+msgid "Update users"
+msgstr "Actualizar usuarios"
+
+msgid "Is a channel"
+msgstr "Es un canal"
+
+msgid "Updated from"
+msgstr "Actualizados desde"
+
+msgid "Updated until"
+msgstr "Actualizados hasta"
+
+msgid "By resource"
+msgstr "Por recurso"
+
+msgid "Search"
+msgstr "Buscar"
+
+msgid "Search messages"
+msgstr "Buscar mensajes"
+
+msgid "Newest messages first by creation date"
+msgstr "Más recientes por fecha de creación"
+
+msgid "Oldest messages first by creation date"
+msgstr "Más antiguos por fecha de creación"
+
+msgid "Text mode"
+msgstr "Modo texto"
+
+msgid "Search all messages or narrow by filters"
+msgstr "Consulta todos los mensajes o filtra los resultados"
+
+msgid "Entities"
+msgstr "Entidades"
+
+msgid "Media types"
+msgstr "Tipos de contenido"
+
+msgid "All media types"
+msgstr "Todos los tipos de contenido"
+
+msgid "Web page"
+msgstr "Página web"
+
+msgid "Document media"
+msgstr "Documento"
+
+msgid "Photo media"
+msgstr "Imagen"
+
+msgid "Video media"
+msgstr "Vídeo"
+
+msgid "Audio media"
+msgstr "Audio"
+
+msgid "GIF media"
+msgstr "GIF"
+
+msgid "Contact media"
+msgstr "Contacto"
+
+msgid "Geolocation"
+msgstr "Geolocalización"
+
+msgid "Only text"
+msgstr "Solo texto"
+
+msgid "Other"
+msgstr "Otro"
+
+msgid "Use double underscores between entities"
+msgstr "Separa las entidades con dos guiones bajos"
+
+msgid "Use double underscores between multiple filter values."
+msgstr "Separa varios valores con dos guiones bajos."
+
+msgid "Advanced filters"
+msgstr "Filtros avanzados"
+
+msgid "Expand filters"
+msgstr "Expandir filtros"
+
+msgid "Collapse filters"
+msgstr "Contraer filtros"
+
+msgid "Any tag"
+msgstr "Cualquier etiqueta"
+
+msgid "All tags"
+msgstr "Todas las etiquetas"
+
+msgid "All messages"
+msgstr "Todos los mensajes"
+
+msgid "Exclude replies"
+msgstr "Excluir respuestas"
+
+msgid "Search rooms and tags, or press Enter to add a value."
+msgstr "Busca salas y etiquetas, o pulsa Enter para añadir un valor."
+
+msgid "This message has no text content."
+msgstr "Este mensaje no tiene texto."
+
+msgid "Showing %(count)s messages"
+msgstr "Se muestran %(count)s mensajes"
+
+msgid "Showing {count} messages"
+msgstr "Se muestran {count} mensajes"
+
+msgid "Message in"
+msgstr "Mensaje en"
+
+msgid "%(views)s views"
+msgstr "%(views)s visualizaciones"
+
+msgid "Search result pages"
+msgstr "Páginas de resultados de búsqueda"
+
+msgid "Previous results"
+msgstr "Resultados anteriores"
+
+msgid "More results"
+msgstr "Más resultados"
+
+msgid "No messages matched this search."
+msgstr "Ningún mensaje coincide con esta búsqueda."
+
+msgid "By title"
+msgstr "Por título"
+
+msgid "Collected from"
+msgstr "Recopilados desde"
+
+msgid "Collected until"
+msgstr "Recopilados hasta"
+
+msgid "Refresh existing data"
+msgstr "Regenerar datos existentes"
+
+msgid "Reindex results"
+msgstr "Reindexar resultados"
+
+msgid "Instruction"
+msgstr "Instrucción"
+
+msgid "Storage slot"
+msgstr "Espacio de almacenamiento"
+
+msgid "Pause"
+msgstr "Pausar"
+
+msgid "Resume"
+msgstr "Reanudar"
+
+msgid "Cancel"
+msgstr "Cancelar"
+
+msgid "Retry failed"
+msgstr "Reintentar errores"
+
+msgid "Unknown status"
+msgstr "Estado desconocido"
+
+msgid "Any"
+msgstr "Cualquiera"
+
+msgid "Yes"
+msgstr "Sí"
+
+msgid "No"
+msgstr "No"
+
+msgid "Separate values with commas or line breaks."
+msgstr "Separa los valores con comas o saltos de línea."
+
+msgid "Operation"
+msgstr "Operación"
+
+msgid "Choose an available operation."
+msgstr "Selecciona una operación disponible."
+
+msgid "Choose an operation."
+msgstr "Selecciona una operación."
+
+msgid "Name"
+msgstr "Nombre"
+
+msgid "Description"
+msgstr "Descripción"
+
+msgid "Schedule type"
+msgstr "Modalidad"
+
+msgid "Repeat every..."
+msgstr "Repetir cada..."
+
+msgid "Schedule by calendar"
+msgstr "Programar según calendario"
+
+msgid "Run once"
+msgstr "Ejecutar una vez"
+
+msgid "Every"
+msgstr "Cada"
+
+msgid "Unit"
+msgstr "Unidad"
+
+msgid "Minute"
+msgstr "Minuto"
+
+msgid "Hour"
+msgstr "Hora"
+
+msgid "Day of the week"
+msgstr "Día de la semana"
+
+msgid "Day of the month"
+msgstr "Día del mes"
+
+msgid "Month"
+msgstr "Mes"
+
+msgid "Time zone"
+msgstr "Zona horaria"
+
+msgid "Date and time"
+msgstr "Fecha y hora"
+
+msgid "Enabled"
+msgstr "Activa"
+
+msgid "Start from"
+msgstr "Comenzar desde"
+
+msgid "Expire at"
+msgstr "Caducar en"
+
+msgid "Expire after (seconds)"
+msgstr "Caducar tras (segundos)"
+
+msgid "Specify how often it repeats."
+msgstr "Indica cada cuánto se repite."
+
+msgid "This field is required for the calendar."
+msgstr "Este campo es necesario para el calendario."
+
+msgid "Specify when it should run."
+msgstr "Indica cuándo debe ejecutarse."
+
+msgid "Not started"
+msgstr "Sin iniciar"
+
+msgid "Additional criterion"
+msgstr "Criterio adicional"
+
+msgid "The operation did not return a durable Job."
+msgstr "La operación no devolvió un Job durable."
+
+msgid "Unknown or non-schedulable operation."
+msgstr "Operación desconocida o no programable."
+
+msgid "microseconds"
+msgstr "microsegundos"
+
+msgid "milliseconds"
+msgstr "milisegundos"
+
+msgid "seconds"
+msgstr "segundos"
+
+msgid "minutes"
+msgstr "minutos"
+
+msgid "hours"
+msgstr "horas"
+
+msgid "days"
+msgstr "días"
+
+msgid "Interval"
+msgstr "Intervalo"
+
+msgid "Every %(every)s %(period)s"
+msgstr "Cada %(every)s %(period)s"
+
+msgid "Calendar"
+msgstr "Calendario"
+
+msgid "According to calendar"
+msgstr "Según calendario"
+
+msgid "Specific date and time"
+msgstr "Fecha y hora concreta"
+
+msgid "Once"
+msgstr "Una vez"
+
+msgid "Live"
+msgstr "En vivo"
+
+msgid "Historical"
+msgstr "Histórico"
+
+msgid "The Job was created and will start when capacity is available."
+msgstr "El Job se ha creado y comenzará cuando haya capacidad disponible."
+
+msgid "Action applied: %(action)s."
+msgstr "Acción aplicada: %(action)s."
+
+msgid "updated"
+msgstr "actualizada"
+
+msgid "created"
+msgstr "creada"
+
+msgid "The schedule was %(action)s."
+msgstr "La programación se ha %(action)s."
+
+msgid "The schedule was updated."
+msgstr "La programación se ha actualizado."
+
+msgid "The schedule was deleted."
+msgstr "La programación se ha eliminado."
+
+msgid "Dashboard"
+msgstr "Dashboard"
+
+msgid "Skip to content"
+msgstr "Saltar al contenido"
+
+msgid "Main navigation"
+msgstr "Navegación principal"
+
+msgid "Jobs"
+msgstr "Jobs"
+
+msgid "New Job"
+msgstr "Nuevo Job"
+
+msgid "Schedules"
+msgstr "Programaciones"
+
+msgid "Language"
+msgstr "Idioma"
+
+msgid "English"
+msgstr "Inglés"
+
+msgid "Spanish"
+msgstr "Español"
+
+msgid "Sign out"
+msgstr "Salir"
+
+msgid "Sign in"
+msgstr "Iniciar sesión"
+
+msgid "Internal console"
+msgstr "Consola interna"
+
+msgid "Access is restricted to authorized users."
+msgstr "El acceso está reservado a usuarios autorizados."
+
+msgid "Job execution graph"
+msgstr "Grafo de ejecución del Job"
+
+msgid "No stage information is available yet."
+msgstr "Todavía no hay información de etapas."
+
+msgid "No stages are available yet."
+msgstr "Aún no hay etapas disponibles."
+
+msgid "Updated Job summary"
+msgstr "Resumen actualizado del Job"
+
+msgid "Progress"
+msgstr "Progreso"
+
+msgid "No estimate available"
+msgstr "Sin estimación disponible"
+
+msgid "Items processed"
+msgstr "Elementos procesados"
+
+msgid "Items failed"
+msgstr "Elementos con error"
+
+msgid "Completed Batches"
+msgstr "Batches completados"
+
+msgid "Latest error:"
+msgstr "Último error:"
+
+msgid "Operations"
+msgstr "Operaciones"
+
+msgid "Monitor operations and their Batch progress."
+msgstr "Supervisa las operaciones y el progreso de sus Batches."
+
+msgid "Create Job"
+msgstr "Crear Job"
+
+msgid "Capacity summary"
+msgstr "Resumen de capacidad"
+
+msgid "Active Jobs"
+msgstr "Jobs activos"
+
+msgid "Active Batches"
+msgstr "Batches activos"
+
+msgid "Jobs shown"
+msgstr "Jobs mostrados"
+
+msgid "Filter Jobs"
+msgstr "Filtrar Jobs"
+
+msgid "Status"
+msgstr "Estado"
+
+msgid "All"
+msgstr "Todos"
+
+msgid "Execution type"
+msgstr "Tipo de ejecución"
+
+msgid "Filter"
+msgstr "Filtrar"
+
+msgid "Clear"
+msgstr "Limpiar"
+
+msgid "Job list"
+msgstr "Listado de Jobs"
+
+msgid "Job"
+msgstr "Job"
+
+msgid "In progress"
+msgstr "En curso"
+
+msgid "Job progress"
+msgstr "Progreso del Job"
+
+msgid "Processed"
+msgstr "Procesados"
+
+msgid "Derived operations"
+msgstr "Operaciones derivadas"
+
+msgid "View details"
+msgstr "Ver detalle"
+
+msgid "No Jobs to show"
+msgstr "No hay Jobs que mostrar"
+
+msgid "A Job will appear here after you launch an operation."
+msgstr "Cuando lances una operación aparecerá aquí su seguimiento."
+
+msgid "Create the first Job"
+msgstr "Crear el primer Job"
+
+msgid "New operation"
+msgstr "Nueva operación"
+
+msgid "Choose a registered operation and complete its criteria."
+msgstr "Selecciona una operación registrada y completa sus criterios."
+
+msgid "Criteria"
+msgstr "Criterios"
+
+msgid "Advanced values are optional and separated from the main operation."
+msgstr "Los valores avanzados son opcionales y se muestran separados para no distraer de la operación principal."
+
+msgid "Input"
+msgstr "Entrada"
+
+msgid "Selection criteria"
+msgstr "Criterios de selección"
+
+msgid "This operation has no additional criteria."
+msgstr "Esta operación no tiene criterios adicionales."
+
+msgid "Execution"
+msgstr "Ejecución"
+
+msgid "Job flow"
+msgstr "Flujo del Job"
+
+msgid "Work units"
+msgstr "Unidades de trabajo"
+
+msgid "Batches"
+msgstr "Batches"
+
+msgid "Job Batches"
+msgstr "Batches del Job"
+
+msgid "Batch"
+msgstr "Batch"
+
+msgid "Current stage"
+msgstr "Etapa actual"
+
+msgid "Items"
+msgstr "Elementos"
+
+msgid "Updated"
+msgstr "Actualizado"
+
+msgid "failed"
+msgstr "con errores"
+
+msgid "This Job has no materialized Batches yet."
+msgstr "Este Job todavía no tiene Batches materializados."
+
+msgid "Batch pagination"
+msgstr "Paginación de Batches"
+
+msgid "Previous"
+msgstr "Anterior"
+
+msgid "Page %(page)s of %(pages)s"
+msgstr "Página %(page)s de %(pages)s"
+
+msgid "Next"
+msgstr "Siguiente"
+
+msgid "Control"
+msgstr "Control"
+
+msgid "Actions"
+msgstr "Acciones"
+
+msgid "Cancel this Job and its derived operations?"
+msgstr "¿Cancelar este Job y sus operaciones derivadas?"
+
+msgid "No actions are available for this status."
+msgstr "No hay acciones disponibles para este estado."
+
+msgid "Technical information"
+msgstr "Información técnica"
+
+msgid "Identifier"
+msgstr "Identificador"
+
+msgid "Internal processor"
+msgstr "Procesador interno"
+
+msgid "Internal mode"
+msgstr "Modo interno"
+
+msgid "Internal stages"
+msgstr "Etapas internas"
+
+msgid "Batch size"
+msgstr "Tamaño de Batch"
+
+msgid "Maximum concurrency"
+msgstr "Concurrencia máxima"
+
+msgid "%(count)s data transfer"
+msgid_plural "%(count)s data transfers"
+msgstr[0] "%(count)s transferencia de datos"
+msgstr[1] "%(count)s transferencias de datos"
+
+msgid "%(count)s completed"
+msgid_plural "%(count)s completed"
+msgstr[0] "%(count)s completado"
+msgstr[1] "%(count)s completados"
+
+msgid "%(count)s running"
+msgid_plural "%(count)s running"
+msgstr[0] "%(count)s en ejecución"
+msgstr[1] "%(count)s en ejecución"
+
+msgid "%(count)s pending"
+msgid_plural "%(count)s pending"
+msgstr[0] "%(count)s pendiente"
+msgstr[1] "%(count)s pendientes"
+
+msgid "%(count)s retrying"
+msgid_plural "%(count)s retrying"
+msgstr[0] "%(count)s en reintento"
+msgstr[1] "%(count)s en reintento"
+
+msgid "%(count)s failed"
+msgid_plural "%(count)s failed"
+msgstr[0] "%(count)s con errores"
+msgstr[1] "%(count)s con errores"
+
+msgid "%(count)s attempt"
+msgid_plural "%(count)s attempts"
+msgstr[0] "%(count)s intento"
+msgstr[1] "%(count)s intentos"
+
+msgid "Automation"
+msgstr "Automatización"
+
+msgid "Control when registered operations are launched."
+msgstr "Controla cuándo se lanzan las operaciones registradas."
+
+msgid "New schedule"
+msgstr "Nueva programación"
+
+msgid "Schedule list"
+msgstr "Listado de programaciones"
+
+msgid "Disabled"
+msgstr "Inactiva"
+
+msgid "Frequency"
+msgstr "Frecuencia"
+
+msgid "Runs"
+msgstr "Ejecuciones"
+
+msgid "Last run"
+msgstr "Última ejecución"
+
+msgid "Never"
+msgstr "Nunca"
+
+msgid "Edit"
+msgstr "Editar"
+
+msgid "Disable"
+msgstr "Desactivar"
+
+msgid "Enable"
+msgstr "Activar"
+
+msgid "Delete this schedule?"
+msgstr "¿Eliminar esta programación?"
+
+msgid "Delete"
+msgstr "Eliminar"
+
+msgid "No schedules"
+msgstr "No hay programaciones"
+
+msgid "Create one to launch a registered operation automatically."
+msgstr "Crea una para lanzar una operación registrada automáticamente."
+
+msgid "Create schedule"
+msgstr "Crear programación"
+
+msgid "Edit schedule"
+msgstr "Editar programación"
+
+msgid "Each schedule uses one type and one registered operation."
+msgstr "Cada programación utiliza una única modalidad y una operación registrada."
+
+msgid "When it runs"
+msgstr "Cuándo se ejecuta"
+
+msgid "Operation criteria"
+msgstr "Criterios de la operación"
+
+msgid "Options"
+msgstr "Opciones"
+
+msgid "Save schedule"
+msgstr "Guardar programación"
+
+msgid "Remove"
+msgstr "Quitar"
+
+msgid "No items added yet."
+msgstr "Aún no se ha añadido ningún elemento."
+
+msgid "Add an item"
+msgstr "Añade un elemento"
+
+msgid "Add item"
+msgstr "Añadir elemento"
+
+msgid "Advanced options"
+msgstr "Opciones avanzadas"
+
+msgid "Optional"
+msgstr "Opcional"
+
+msgid "Calendar options"
+msgstr "Opciones del calendario"
+
+msgid "Advanced"
+msgstr "Avanzado"
+
+msgid "Selection"
+msgstr "Selección"
+
+msgid "Message filters"
+msgstr "Filtros de mensajes"
+
+msgid "Limits"
+msgstr "Límites"
+
+msgid "Other filters"
+msgstr "Otros filtros"
+
+msgid "Dark mode"
+msgstr "Modo oscuro"
+
+msgid "Light mode"
+msgstr "Modo claro"
+
+msgid "Use dark mode"
+msgstr "Usar modo oscuro"
+
+msgid "Use light mode"
+msgstr "Usar modo claro"
+
+msgid "Copyright © 2026, GiCP. All rights reserved."
+msgstr "Copyright © 2026, GiCP. Todos los derechos reservados."
+
+msgid "Social links"
+msgstr "Enlaces sociales"
+
+msgid "GiCP on X"
+msgstr "GiCP en X"
+
+msgid "X / Twitter"
+msgstr "X / Twitter"
+
+msgid "Change schedule status"
+msgstr "Cambiar estado de la programación"
+
+msgid "Disable schedule"
+msgstr "Desactivar programación"
+
+msgid "Enable schedule"
+msgstr "Activar programación"
+
+msgid "Admin"
+msgstr "Administración"
+
+msgid "Started"
+msgstr "Iniciado"
+
+msgid "Finished"
+msgstr "Finalizado"
+
+msgid "Not finished"
+msgstr "Sin finalizar"
+
+msgid "Job dates"
+msgstr "Fechas del Job"
+
+msgid "Date filters"
+msgstr "Filtros de fecha"
+
+msgid "Any date"
+msgstr "Cualquier fecha"
+
+msgid "Dates selected"
+msgstr "Fechas seleccionadas"
+
+msgid "Choose dates"
+msgstr "Elegir fechas"
+
+msgid "Started from"
+msgstr "Iniciado desde"
+
+msgid "Started until"
+msgstr "Iniciado hasta"
+
+msgid "Finished from"
+msgstr "Finalizado desde"
+
+msgid "Finished until"
+msgstr "Finalizado hasta"
+
+msgid "The end date must be on or after the start date."
+msgstr "La fecha final debe ser igual o posterior a la fecha inicial."
+
+msgid "Pipeline results"
+msgstr "Resultados del pipeline"
+
+msgid "Batch results"
+msgstr "Resultados del batch"
+
+msgid "Explain batch counts"
+msgstr "Explicar los contadores del batch"
+
+msgid "Input items"
+msgstr "Elementos de entrada"
+
+msgid "Accepted by current stage"
+msgstr "Aceptados por la etapa actual"
+
+msgid "Skipped"
+msgstr "Omitidos"
+
+msgid "Deferred"
+msgstr "Pospuestos"
+
+msgid "Completed rooms"
+msgstr "Salas completadas"
+
+msgid "Messages recovered"
+msgstr "Mensajes recuperados"
+
+msgid "Messages sent to NER"
+msgstr "Mensajes enviados a NER"
+
+msgid "Messages sent to ner"
+msgstr "Mensajes enviados a NER"
+
+msgid "Messages skipped"
+msgstr "Mensajes omitidos"
+
+msgid "Entities extracted"
+msgstr "Entidades extraídas"
+
+msgid "Extracted entities"
+msgstr "Entidades extraídas"
+
+msgid "Annotations extracted"
+msgstr "Anotaciones extraídas"
+
+msgid "Entities stored"
+msgstr "Entidades almacenadas"
+
+msgid "Annotations stored"
+msgstr "Anotaciones almacenadas"
+
+msgid "Processed by workflow"
+msgstr "Procesados por el workflow"
+
+msgid "Messages indexed"
+msgstr "Mensajes indexados"
+
+msgid "Messages submitted for indexing"
+msgstr "Mensajes enviados al indexador"
+
+msgid "Rooms indexed"
+msgstr "Salas indexadas"
+
+
+msgid "Execution results"
+msgstr "Resultados de ejecución"
+
+msgid "Workflow summary"
+msgstr "Resumen del workflow"
+
+msgid "received"
+msgstr "recibidos"
+
+msgid "Batch input"
+msgstr "Entrada del batch"
+
+msgid "Explain batch input and stage counts"
+msgstr "Explicar la entrada y los contadores de las etapas"
+
+msgid "Historical batch results"
+msgstr "Resultados históricos del batch"
+
+msgid "Workflow completed"
+msgstr "Workflow completado"
+
+msgid "No stage metrics available yet."
+msgstr "Aún no hay métricas de etapas disponibles."
+
+msgid "excluded"
+msgstr "excluidos"
+
+msgid "records"
+msgstr "registros"
+
+msgid "processed"
+msgstr "procesados"
+
+msgid "rooms"
+msgstr "salas"
+
+msgid "messages"
+msgstr "mensajes"
+
+msgid "seeds"
+msgstr "semillas"
+
+msgid "sent to NER"
+msgstr "enviados a NER"
+
+msgid "messages stored"
+msgstr "mensajes almacenados"
+
+msgid "messages indexed"
+msgstr "mensajes indexados"
+
+msgid "rooms scanned"
+msgstr "salas escaneadas"
+
+msgid "rooms resolved"
+msgstr "salas resueltas"
+
+msgid "seeds populated"
+msgstr "semillas pobladas"
+
+msgid "embeddings generated"
+msgstr "embeddings generados"
+
+msgid "Embeddings generated"
+msgstr "Embeddings generados"
+
+msgid "sentiments classified"
+msgstr "sentimientos clasificados"
+
+msgid "Sentiments classified"
+msgstr "Sentimientos clasificados"
+
+msgid "Embedding processing failed"
+msgstr "Falló el procesamiento de embeddings"
+
+msgid "Sentiment processing failed"
+msgstr "Falló el análisis de sentimiento"
+
+msgid "Not processed"
+msgstr "No procesados"
+
+msgid "Rooms scanned"
+msgstr "Salas escaneadas"
+
+msgid "Rooms not scanned"
+msgstr "Salas no escaneadas"
+
+msgid "Seeds populated"
+msgstr "Semillas pobladas"
+
+msgid "Seeds invalid"
+msgstr "Semillas inválidas"
+
+msgid "Rooms resolved"
+msgstr "Salas resueltas"
+
+msgid "Rooms deleted"
+msgstr "Salas eliminadas"
+
+msgid "Missing source item"
+msgstr "Elemento de origen ausente"
+
+msgid "No ner input"
+msgstr "Sin entrada válida para NER"
+
+msgid "Claimed by another job"
+msgstr "Reclamado por otro Job"
+
+msgid "Already processed"
+msgstr "Ya procesado"
+
+msgid "Not ready"
+msgstr "No preparado"
+
+msgid "Invalid seed"
+msgstr "Semilla inválida"
+
+msgid "Room deleted"
+msgstr "Sala eliminada"
+
+msgid "Output"
+msgstr "Salida"
+
+msgid "Stage input metrics"
+msgstr "Métricas de entrada de etapa"
+
+msgid "Stage output metrics"
+msgstr "Métricas de salida de etapa"
+
+msgid "Input to"
+msgstr "Entrada para"
+
+msgid "Count unavailable in summary"
+msgstr "Recuento no disponible en el resumen"
+
+msgid "Output from"
+msgstr "Salida de"
+
+msgid "Processed by"
+msgstr "Procesado por"
+
+msgid "Stage has an error"
+msgstr "La etapa tiene un error"
+
+msgid "Open stage details"
+msgstr "Abrir el detalle de la etapa"
+
+msgid "Open Batch details"
+msgstr "Abrir el detalle del Batch"
+
+msgid "View detail"
+msgstr "Ver detalle"
+
+msgid "Show fewer metrics"
+msgstr "Mostrar menos métricas"
+
+msgid "Show %(count)s more metric"
+msgid_plural "Show %(count)s more metrics"
+msgstr[0] "Mostrar %(count)s métrica más"
+msgstr[1] "Mostrar %(count)s métricas más"
+
+msgid "+%(count)s metric"
+msgid_plural "+%(count)s metrics"
+msgstr[0] "+%(count)s métrica"
+msgstr[1] "+%(count)s métricas"
+
+msgid "Batch details"
+msgstr "Detalle del Batch"
+
+msgid "Stage details"
+msgstr "Detalle de la etapa"
+
+msgid "Created"
+msgstr "Creado"
+
+msgid "Batch context"
+msgstr "Contexto del Batch"
+
+msgid "Stage context"
+msgstr "Contexto de la etapa"
+
+msgid "Batch counters"
+msgstr "Contadores del Batch"
+
+msgid "Dependencies"
+msgstr "Dependencias"
+
+msgid "Transfer"
+msgstr "Transferencia"
+
+msgid "Results by stage"
+msgstr "Resultados por etapa"
+
+msgid "Latest error"
+msgstr "Último error"
+
+msgid "Attempts"
+msgstr "Intentos"
+
+msgid "Inputs"
+msgstr "Entradas"
+
+msgid "Outputs"
+msgstr "Salidas"
+
+msgid "Excluded"
+msgstr "Excluidos"
+
+msgid "Metadata"
+msgstr "Metadatos"
+
+msgid "Back to Batch"
+msgstr "Volver al Batch"
+
+msgid "Close details"
+msgstr "Cerrar el detalle"
+
+msgid "No summary data available."
+msgstr "No hay datos de resumen disponibles."
+
+msgid "This item is no longer available in the refreshed graph."
+msgstr "Este elemento ya no está disponible en el grafo actualizado."
+
+msgid "Graph view controls"
+msgstr "Controles de vista del grafo"
+
+msgid "Zoom out"
+msgstr "Alejar"
+
+msgid "Reset zoom"
+msgstr "Restablecer zoom"
+
+msgid "Zoom in"
+msgstr "Acercar"
+
+msgid "Enter fullscreen"
+msgstr "Ampliar a pantalla completa"
+
+msgid "Exit fullscreen"
+msgstr "Salir de pantalla completa"
+
+msgid "Activity overview"
+msgstr "Resumen de actividad"
+
+msgid "Overview"
+msgstr "Resumen"
+
+msgid "Message analytics"
+msgstr "Análisis de mensajes"
+
+msgid "Track message activity and explore changes over time."
+msgstr "Consulta la actividad de los mensajes y explora sus cambios a lo largo del tiempo."
+
+msgid "Browse messages"
+msgstr "Explorar mensajes"
+
+msgid "Quick date ranges"
+msgstr "Rangos de fechas rápidos"
+
+msgid "Move date range"
+msgstr "Desplazar el rango de fechas"
+
+msgid "Previous period"
+msgstr "Período anterior"
+
+msgid "Next period"
+msgstr "Período siguiente"
+
+msgid "Refresh"
+msgstr "Actualizar"
+
+msgid "Try again"
+msgstr "Reintentar"
+
+msgid "Filters"
+msgstr "Filtros"
+
+msgid "Scope"
+msgstr "Selección"
+
+msgid "Focus on the conversations that matter."
+msgstr "Céntrate en las conversaciones que te interesan."
+
+msgid "Apply filters"
+msgstr "Aplicar filtros"
+
+msgid "Charts update when you change filters. Apply custom dates with Refresh."
+msgstr "Los gráficos se actualizan al cambiar los filtros. Aplica las fechas personalizadas con Actualizar."
+
+msgid "Selected range"
+msgstr "Rango seleccionado"
+
+msgid "Loading statistics…"
+msgstr "Cargando estadísticas…"
+
+msgid "Across selected range"
+msgstr "En el rango seleccionado"
+
+msgid "Average frequency"
+msgstr "Frecuencia media"
+
+msgid "Per period with messages"
+msgstr "Por período con mensajes"
+
+msgid "Peak frequency"
+msgstr "Frecuencia máxima"
+
+msgid "Highest period count"
+msgstr "Mayor número de mensajes por período"
+
+msgid "Unusual periods"
+msgstr "Períodos inusuales"
+
+msgid "Absolute z-score ≥ 2"
+msgstr "Valor absoluto de z-score ≥ 2"
+
+msgid "Message frequency"
+msgstr "Frecuencia de mensajes"
+
+msgid "Chart date range"
+msgstr "Rango de fechas del gráfico"
+
+msgid "Mean"
+msgstr "Media"
+
+msgid "Deviation"
+msgstr "Desviación"
+
+msgid "Z-score"
+msgstr "Z-score"
+
+msgid "Reference band"
+msgstr "Banda de referencia"
+
+msgid "Z-scores compare periods containing messages in this selection. Empty periods have no score; a single or constant series has a score of zero."
+msgstr "Los z-scores comparan los períodos que contienen mensajes en esta selección. Los períodos vacíos no tienen puntuación; una serie única o constante tiene un valor de cero."
+
+msgid "Hover or use arrow keys to inspect. Drag across a chart to zoom into a date range."
+msgstr "Sitúa el cursor o usa las flechas para consultar los valores. Arrastra sobre el gráfico para ampliar un rango de fechas."
+
+msgid "View period data"
+msgstr "Ver datos por período"
+
+msgid "The values behind both charts."
+msgstr "Los valores de ambos gráficos."
+
+msgid "Export CSV"
+msgstr "Exportar CSV"
+
+msgid "Message frequency and z-score by period"
+msgstr "Frecuencia de mensajes y z-score por período"
+
+msgid "Period"
+msgstr "Período"
+
+msgid "Enable JavaScript to load and interact with the charts."
+msgstr "Activa JavaScript para cargar e interactuar con los gráficos."
+
+msgid "Last 7 days"
+msgstr "Últimos 7 días"
+
+msgid "Last 30 days"
+msgstr "Últimos 30 días"
+
+msgid "Last 90 days"
+msgstr "Últimos 90 días"
+
+msgid "Last year"
+msgstr "Último año"
+
+msgid "Custom range"
+msgstr "Rango personalizado"
+
+msgid "From"
+msgstr "Desde"
+
+msgid "To"
+msgstr "Hasta"
+
+msgid "Auto"
+msgstr "Auto"
+
+msgid "Daily"
+msgstr "Diario"
+
+msgid "Weekly"
+msgstr "Semanal"
+
+msgid "Monthly"
+msgstr "Mensual"
+
+msgid "Yearly"
+msgstr "Anual"
+
+msgid "This range has too many points. Choose Auto or a wider interval."
+msgstr "Este rango tiene demasiados puntos. Selecciona Auto o un intervalo más amplio."
+
+msgid "Choose a date on or after %(date)s."
+msgstr "Selecciona una fecha igual o posterior al %(date)s."
+
+msgid "Updating charts…"
+msgstr "Actualizando gráficos…"
+
+msgid "Charts updated"
+msgstr "Gráficos actualizados"
+
+msgid "Statistics could not be loaded. Try again."
+msgstr "No se han podido cargar las estadísticas. Reinténtalo."
+
+msgid "Your session has expired. Sign in to continue."
+msgstr "Tu sesión ha caducado. Inicia sesión para continuar."
+
+msgid "Check the highlighted filters."
+msgstr "Revisa los filtros indicados."
+
+msgid "Dismiss notification"
+msgstr "Cerrar notificación"
+
+msgid "No messages in this range"
+msgstr "No hay mensajes en este rango"
+
+msgid "Try a wider date range or adjust your filters."
+msgstr "Prueba un rango de fechas más amplio o ajusta los filtros."
+
+msgid "No score"
+msgstr "Sin puntuación"
+
+msgid "periods with messages"
+msgstr "períodos con mensajes"
+
+msgid "Peak"
+msgstr "Máximo"
+
+msgid "Unusual activity"
+msgstr "Actividad inusual"
+
+msgid "Drag to select a range. Use arrow keys to inspect periods."
+msgstr "Arrastra para seleccionar un rango. Usa las flechas para consultar los períodos."
+
+msgid "No data to display."
+msgstr "No hay datos que mostrar."
+
+msgid "Showing"
+msgstr "Mostrando"
+
+msgid "of"
+msgstr "de"
+
+msgid "Showing the previous selection while new data loads."
+msgstr "Se muestra la selección anterior mientras se cargan los nuevos datos."
+
+msgid "Showing the last successful selection. Current filters were not applied."
+msgstr "Se muestra la última selección cargada. Los filtros actuales no se han aplicado."
+
+msgid "Period start"
+msgstr "Inicio del período"
+
+msgid "Period end"
+msgstr "Fin del período"
+
+msgid "Replies"
+msgstr "Respuestas"
+
+msgid "Last day"
+msgstr "Último día"
+
+msgid "Last week"
+msgstr "Última semana"
+
+msgid "Last month"
+msgstr "Último mes"
+
+msgid "Last 3 months"
+msgstr "Últimos 3 meses"
+
+msgid "Last 5 years"
+msgstr "Últimos 5 años"
+
+msgid "All history"
+msgstr "Todo el historial"
+
+msgid "Reload"
+msgstr "Recargar"
+
+msgid "Date range and filters"
+msgstr "Rango de fechas y filtros"
+
+msgid "Clear filters"
+msgstr "Limpiar filtros"
+
+msgid "Frequency and deviation"
+msgstr "Frecuencia y desviación"
+
+msgid "Message activity"
+msgstr "Actividad de mensajes"
+
+msgid "Show z-score"
+msgstr "Mostrar z-score"
+
+msgid "The values behind the chart."
+msgstr "Los valores del gráfico."
+
+msgid "Frequency and z-score"
+msgstr "Frecuencia y z-score"
+
+msgid "Browse analytics"
+msgstr "Explorar estadísticas"
+
+msgid "Analytics uses date, room, tag and reply filters."
+msgstr "Las estadísticas usan los filtros de fechas, salas, etiquetas y respuestas."
+
+msgid "Loading entities…"
+msgstr "Cargando entidades…"
+
+msgid "Updating entities…"
+msgstr "Actualizando entidades…"
+
+msgid "Waiting for the selected range…"
+msgstr "Esperando el intervalo seleccionado…"
+
+msgid "Entities could not be loaded. Try again."
+msgstr "No se pudieron cargar las entidades. Inténtalo de nuevo."
+
+msgid "No entities in this selection."
+msgstr "No hay entidades en esta selección."
+
+msgid "Try a wider range or different entity types."
+msgstr "Prueba un intervalo más amplio u otros tipos de entidad."
+
+msgid "Appearances"
+msgstr "Apariciones"
+
+msgid "All types"
+msgstr "Todos los tipos"
+
+msgid "types"
+msgstr "tipos"
+
+msgid "More entities are available through the API."
+msgstr "Puedes consultar más entidades a través de la API."
+
+msgid "Showing the last successful selection."
+msgstr "Se muestra la última selección cargada correctamente."
+
+msgid "Named entities"
+msgstr "Entidades nombradas"
+
+msgid "Entity cloud"
+msgstr "Nube de entidades"
+
+msgid "Entity types"
+msgstr "Tipos de entidad"
+
+msgid "Include entity types"
+msgstr "Incluir tipos de entidad"
+
+msgid "Size by"
+msgstr "Tamaño según"
+
+msgid "Same date range and message filters as above."
+msgstr "Mismo intervalo de fechas y filtros de mensajes que arriba."
+
+msgid "Entities ranked by frequency"
+msgstr "Entidades ordenadas por frecuencia"
+
+msgid "Select an entity to browse its messages."
+msgstr "Selecciona una entidad para explorar sus mensajes."
+
+msgid "Entity counts"
+msgstr "Conteos de entidades"
+
+msgid "Top entities · exact counts"
+msgstr "Entidades principales · conteos exactos"
+
+msgid "Entity"
+msgstr "Entidad"
+
+msgid "Type"
+msgstr "Tipo"
+
+msgid "Filtered by the entity selected in analytics."
+msgstr "Filtrado por la entidad seleccionada en estadísticas."
+
+msgid "Search messages indexed"
+msgstr "Mensajes indexados para búsqueda"
+
+msgid "Analytics entity facts synchronized"
+msgstr "Pares mensaje–entidad sincronizados para analítica"
+
+msgid "Partial destination breakdown: some batches have no recorded details."
+msgstr "Desglose por destino parcial: algunos lotes no tienen el detalle registrado."
+
+msgid "Search indexing skipped by configuration."
+msgstr "Indexación de búsqueda omitida por configuración."
+
+msgid "Search indexing skipped for some batches."
+msgstr "La indexación de búsqueda se omitió en algunos lotes."
+
+#, python-format
+msgid "%(label)s (partial)"
+msgstr "%(label)s (parcial)"
+
+msgid "Check room information"
+msgstr "Comprobar información de las salas"
+
+msgid "Room information"
+msgstr "Información de las salas"
+
+msgid "Compare the username, public link and title with Telegram and record any changes. The description is checked only when one of those changes. Message links and search data are updated only when affected."
+msgstr "Compara el username, el enlace público y el título con Telegram y registra los cambios. La descripción solo se comprueba cuando cambia alguno de esos datos. Los enlaces de mensajes y los datos de búsqueda se actualizan solo si se ven afectados."
+
+msgid "Synchronize room metadata"
+msgstr "Sincronizar metadatos del canal"
+
+msgid "Update room names in search"
+msgstr "Actualizar nombres de canales en la búsqueda"
+
+msgid "Rooms synchronized"
+msgstr "Canales sincronizados"
+
+msgid "Search messages updated"
+msgstr "Mensajes actualizados en la búsqueda"
+
+msgid "Metadata sync failed"
+msgstr "Error al sincronizar metadatos"
+
+msgid "Pending rooms"
+msgstr "Canales pendientes"
+
+msgid "Synchronized rooms"
+msgstr "Canales sincronizados"
+
+msgid "Skipped rooms"
+msgstr "Canales omitidos"
+
+msgid "Retry pending processing"
+msgstr "Reintentar procesamiento pendiente"
+
+msgid "Last recovered error:"
+msgstr "Último error recuperado:"
+
+msgid "Retry all pending message processing"
+msgstr "Reintentar todo el procesamiento de mensajes pendiente"
+
+msgid "Message processing recovery"
+msgstr "Recuperación del procesamiento de mensajes"
+
+msgid "Downstream processing is still pending. Its progress and retries are independent of this Job."
+msgstr "El procesamiento posterior sigue pendiente. Su progreso y sus reintentos son independientes de este Job."
+
+msgid "This Job has failed Batches waiting for a retry."
+msgstr "Este Job tiene lotes fallidos pendientes de reintento."
+
+#, python-format
+msgid "Queued retries for %(jobs)s Jobs and %(batches)s Batches."
+msgstr "Se han encolado reintentos para %(jobs)s Jobs y %(batches)s lotes."
+
+#, python-format
+msgid "%(count)s message processing Job has failed Batches to retry."
+msgid_plural "%(count)s message processing Jobs have failed Batches to retry."
+msgstr[0] "%(count)s Job de procesamiento de mensajes tiene lotes fallidos para reintentar."
+msgstr[1] "%(count)s Jobs de procesamiento de mensajes tienen lotes fallidos para reintentar."
+
+msgid "After automatic retries are exhausted, discard this scheduled Job's own failed batches shortly before the next run. Child processing remains retryable."
+msgstr "Tras agotar los reintentos automáticos, descarta los lotes fallidos del propio Job programado poco antes de la siguiente ejecución. El procesamiento de sus hijos sigue siendo recuperable."

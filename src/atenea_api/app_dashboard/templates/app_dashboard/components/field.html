@@ -1,0 +1,29 @@
+{% load i18n %}
+<div class="form-field{% if field_class %} {{ field_class }}{% endif %}{% if field.errors %} has-error{% endif %}{% if field.field.dashboard_advanced %} advanced-field{% endif %}{% if field.field.dashboard_autocomplete %} autocomplete-field{% endif %}{% if field.field.widget.input_type == 'checkbox' %} toggle-field{% endif %}">
+    {% if field.field.dashboard_autocomplete %}
+        {% include "app_dashboard/components/autocomplete_list.html" with field=field autocomplete_bound_field=True autocomplete_id=field.id_for_label autocomplete_name=field.html_name autocomplete_label=field.label autocomplete_kind=field.field.dashboard_autocomplete_kind autocomplete_url=field.field.dashboard_autocomplete_url autocomplete_values_below_input=values_below_input %}
+    {% elif field.field.dashboard_list %}
+        <label for="{{ field.id_for_label }}-entry">{{ field.label }}</label>
+        <div class="list-editor" data-list-editor data-remove-label="{% translate 'Remove' %}" data-empty-label="{% translate 'No items added yet.' %}">
+            <div class="list-values" data-list-values aria-live="polite"></div>
+            <div class="list-entry-row">
+                <input id="{{ field.id_for_label }}-entry" type="text" data-list-entry autocomplete="off" placeholder="{% translate 'Add an item' %}" aria-describedby="{{ field.id_for_label }}-help">
+                <button class="icon-button" type="button" data-list-add aria-label="{% translate 'Add item' %}">+</button>
+            </div>
+            {{ field }}
+        </div>
+    {% elif field.field.widget.input_type == 'checkbox' %}
+        <label class="toggle-control" for="{{ field.id_for_label }}">
+            {{ field }}
+            <span class="toggle-switch" aria-hidden="true">
+                <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+            </span>
+            <span class="toggle-label">{{ field.label }}</span>
+        </label>
+    {% else %}
+        {{ field.label_tag }}
+        {{ field }}
+    {% endif %}
+    {% if field.help_text %}<small id="{{ field.id_for_label }}-help" class="help-text">{{ field.help_text }}</small>{% endif %}
+    {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+</div>

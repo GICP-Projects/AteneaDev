@@ -1,0 +1,77 @@
+{% extends "app_dashboard/base.html" %}
+{% load i18n static %}
+
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title|default:_('Administration') }} | Atenea{% endblock %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="{% block stylesheet %}{% static 'admin/css/base.css' %}{% endblock %}">
+{% block dark-mode-vars %}{% endblock %}
+{% if not is_popup and is_nav_sidebar_enabled %}
+<link rel="stylesheet" href="{% static 'admin/css/nav_sidebar.css' %}">
+<script src="{% static 'admin/js/nav_sidebar.js' %}" defer></script>
+{% endif %}
+{% block extrastyle %}{% endblock %}
+{% if LANGUAGE_BIDI %}<link rel="stylesheet" href="{% block stylesheet_rtl %}{% static 'admin/css/rtl.css' %}{% endblock %}">{% endif %}
+{% block extrahead %}{% endblock %}
+{% block responsive %}
+<meta name="viewport" content="user-scalable=no, width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<link rel="stylesheet" href="{% static 'admin/css/responsive.css' %}">
+{% if LANGUAGE_BIDI %}<link rel="stylesheet" href="{% static 'admin/css/responsive_rtl.css' %}">{% endif %}
+{% endblock %}
+{% block blockbots %}<meta name="robots" content="NONE,NOARCHIVE">{% endblock %}
+<link rel="stylesheet" href="{% static 'app_dashboard/admin.css' %}">
+{% endblock %}
+
+{% block body_class %}{% if is_popup %}popup {% endif %}{% block bodyclass %}{% endblock %}{% endblock %}
+
+{% block header_admin_link %}<a href="{% url 'app_dashboard:jobs' %}">{% translate "Dashboard" %}</a>{% endblock %}
+
+{% block dashboard_messages %}{% endblock %}
+
+{% block content_wrapper %}
+<div id="container" class="admin-container">
+    {% if not is_popup %}
+    {% block nav-breadcrumbs %}
+    <nav class="admin-breadcrumbs" aria-label="{% translate 'Breadcrumbs' %}">
+        {% block breadcrumbs %}
+        <div class="breadcrumbs">
+            <a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+            {% if title %} &rsaquo; {{ title }}{% endif %}
+        </div>
+        {% endblock %}
+    </nav>
+    {% endblock %}
+    {% endif %}
+
+    <div class="main" id="main">
+        {% if not is_popup and is_nav_sidebar_enabled %}
+        {% block nav-sidebar %}
+            {% include "admin/nav_sidebar.html" %}
+        {% endblock %}
+        {% endif %}
+        <div id="content-start" class="content" tabindex="-1">
+            {% block messages %}
+                {% if messages %}
+                <ul class="messagelist">
+                    {% for message in messages %}
+                    <li{% if message.tags %} class="{{ message.tags }}"{% endif %}>{{ message|capfirst }}</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            {% endblock messages %}
+            <div id="content" class="{% block coltype %}colM{% endblock %}">
+                {% block pretitle %}{% endblock %}
+                {% block content_title %}{% if title %}<h1>{{ title }}</h1>{% endif %}{% endblock %}
+                {% block content_subtitle %}{% if subtitle %}<h2>{{ subtitle }}</h2>{% endif %}{% endblock %}
+                {% block content %}
+                    {% block object-tools %}{% endblock %}
+                    {{ content }}
+                {% endblock %}
+                {% block sidebar %}{% endblock %}
+                <br class="clear">
+            </div>
+            {% block footer %}{% endblock %}
+        </div>
+    </div>
+</div>
+{% endblock %}

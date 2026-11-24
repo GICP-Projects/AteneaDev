@@ -1,0 +1,5 @@
+{% if title %}<h2 class="section-title">{{ title }}</h2>{% endif %}
+{% for field in fields %}
+    {% include "app_dashboard/components/field.html" with field=field %}
+{% endfor %}
+

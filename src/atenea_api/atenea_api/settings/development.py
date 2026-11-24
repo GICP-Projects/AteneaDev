@@ -13,11 +13,11 @@ DEBUG = True
 # site in Django admin > Sites
 SITE_ID = 5
 
+# Deployment-specific hosts/IPs go in DJANGO_EXTRA_ALLOWED_HOSTS (comma-separated).
 ALLOWED_HOSTS = [
     "localhost",
     "127.0.0.1",
-    "161.111.31.220", # arwen ip
-    "arwen",
+    *env_list("DJANGO_EXTRA_ALLOWED_HOSTS"),
 ]
 
 
@@ -25,11 +25,11 @@ ALLOWED_HOSTS = [
 # =====             CORS CONNECTION                =====
 # ======================================================
 CORS_ALLOW_CREDENTIALS = True
+# Allowed front-server origins; add deployment-specific ones in
+# DJANGO_EXTRA_CORS_ORIGINS (comma-separated, e.g. "http://host:3001").
 CORS_ORIGIN_WHITELIST = (
-    # Allowed front-server requests domains/IPs from..
     "http://localhost:3001",
-    "http://161.111.31.220:3001", # development test 
-    "http://161.111.31.220:28001" # development deployed
+    *env_list("DJANGO_EXTRA_CORS_ORIGINS"),
 )
 CORS_ALLOW_HEADERS = [
     "front-api-key",
@@ -41,6 +41,7 @@ CORS_ALLOW_HEADERS = [
 # =====         ELASTICSEARCH SETTINGS             =====
 # ======================================================
 suffix = os.getenv("DEPLOYMENT_UNIQUE_SUFFIX", "")
+CLICKHOUSE["database"] = os.getenv("CLICKHOUSE_DATABASE") or f"atenea_dev{f'_{suffix}' if suffix else ''}"
 # Name of the Elasticsearch index in development / production / testing 
 ELASTICSEARCH_INDEX_NAMES = {
     'app_telegram.documents.RoomDocument': f'dev_room{f"_{suffix}" if suffix else ""}',

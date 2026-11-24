@@ -1,0 +1,124 @@
+{% extends "app_dashboard/base.html" %}
+{% load i18n dashboard_assets %}
+{% block title %}{% translate "Activity overview" %}{% endblock %}
+{% block body_class %}analytics-dashboard{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{% dashboard_static 'app_dashboard/analytics.css' %}">{% endblock %}
+{% block content %}
+<section class="analytics-page" data-analytics data-endpoint="{% url 'app_dashboard:statistics' %}" data-today="{{ today }}" data-timezone="{{ statistics_timezone }}" data-search-url="{% url 'app_dashboard:search' %}">
+    <header class="analytics-heading">
+        <div><p class="analytics-eyebrow">{% translate "Message analytics" %}</p><h1>{% translate "Activity overview" %}</h1><p class="analytics-heading-description">{% translate "Track message activity and explore changes over time." %}</p></div>
+        <a class="button button-quiet" data-analytics-search href="{% url 'app_dashboard:search' %}">{% translate "Browse messages" %}<span aria-hidden="true">↗</span></a>
+    </header>
+    <form method="get" action="{% url 'app_dashboard:home' %}" data-analytics-form>
+        {{ form.range }}
+        <div class="analytics-control-panel">
+        <div class="analytics-toolbar">
+            <p class="analytics-eyebrow analytics-controls-label">{% translate "Date range and filters" %}</p>
+            <div class="analytics-range-presets" role="group" aria-label="{% translate 'Quick date ranges' %}">
+                {% for code, text, label in preset_buttons %}<button type="button" data-range="{{ code }}" aria-label="{{ label }}" title="{{ label }}" aria-pressed="{% if form.range.value == code %}true{% else %}false{% endif %}">{{ text }}</button>{% endfor %}
+            </div>
+            <div class="analytics-date-input"><label for="{{ form.createdat_min.id_for_label }}">{{ form.createdat_min.label }}</label>{{ form.createdat_min }}<small class="visually-hidden" data-field-error="createdat_min"></small></div>
+            <div class="analytics-date-input"><label for="{{ form.createdat_max.id_for_label }}">{{ form.createdat_max.label }}</label>{{ form.createdat_max }}<small class="visually-hidden" data-field-error="createdat_max"></small></div>
+            <div class="analytics-interval-input"><label for="{{ form.group_by.id_for_label }}">{{ form.group_by.label }}</label>{{ form.group_by }}<small class="visually-hidden" data-field-error="group_by"></small></div>
+            <button type="submit" class="button button-primary analytics-refresh" disabled><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M6.1 6.1a8 8 0 0 1 13.3 3M4.6 14.9a8 8 0 0 0 13.3 3"/></svg><span>{% translate "Reload" %}</span></button>
+        </div>
+            <aside class="analytics-sidebar" aria-labelledby="analytics-filter-heading">
+                <details data-filter-panel>
+                <summary class="analytics-sidebar-heading"><h2 id="analytics-filter-heading">{% translate "Filters" %}</h2><span class="analytics-eyebrow">{% translate "Scope" %}</span></summary>
+                <div class="analytics-filter-body">
+                <div class="analytics-filter-field">
+                {% include "app_dashboard/components/field.html" with field=form.room values_below_input=True %}
+                <small class="visually-hidden" data-field-error="room"></small>
+                </div><div class="analytics-filter-field">
+                {% include "app_dashboard/components/field.html" with field=form.tag values_below_input=True %}
+                <small class="visually-hidden" data-field-error="tag"></small>
+                </div><div class="analytics-filter-field">
+                {% include "app_dashboard/components/field.html" with field=form.tag_match %}
+                <small class="visually-hidden" data-field-error="tag_match"></small>
+                </div><div class="analytics-filter-field">
+                {% include "app_dashboard/components/field.html" with field=form.is_reply %}
+                <small class="visually-hidden" data-field-error="is_reply"></small>
+                </div><div class="analytics-filter-field">
+                {% include "app_dashboard/components/field.html" with field=form.stored_since %}
+                <small class="visually-hidden" data-field-error="stored_since"></small>
+                </div>
+                <div class="analytics-filter-actions"><button class="button button-quiet" type="button" data-clear-filters>{% translate "Clear filters" %}</button></div>
+                </div></details>
+            </aside>
+        </div>
+            <div class="analytics-workspace">
+                <div class="analytics-data-heading"><p class="analytics-selection" data-selection>{% translate "Selected range" %}</p><div class="analytics-status" role="status" data-analytics-status><span class="analytics-status-dot" aria-hidden="true"></span><span data-analytics-status-text>{% translate "Loading statistics…" %}</span></div></div>
+                <p class="analytics-stale-note" data-stale-note hidden></p>
+                <div class="analytics-metrics" data-analytics-results aria-busy="true">
+                    <article class="metric-card"><span>{% translate "Messages" %}</span><strong data-stat="total_messages"><span class="analytics-skeleton-value"></span></strong><small>{% translate "Across selected range" %}</small></article>
+                    <article class="metric-card"><span>{% translate "Average frequency" %}</span><strong data-stat="mean_count"><span class="analytics-skeleton-value"></span></strong><small>{% translate "Per period with messages" %}</small></article>
+                    <article class="metric-card"><span>{% translate "Peak frequency" %}</span><strong data-stat="peak_count"><span class="analytics-skeleton-value"></span></strong><small data-peak-date>{% translate "Highest period count" %}</small></article>
+                    <article class="metric-card"><span>{% translate "Unusual periods" %}</span><strong data-stat="unusual_periods"><span class="analytics-skeleton-value"></span></strong><small>{% translate "Absolute z-score ≥ 2" %}</small></article>
+                </div>
+                <div class="analytics-charts" data-analytics-results aria-busy="true">
+                    <article class="panel analytics-chart-panel">
+                        <div class="analytics-chart-topbar">
+                        <header class="analytics-chart-heading"><div><p class="analytics-eyebrow">{% translate "Frequency and deviation" %}</p><h2>{% translate "Message activity" %}</h2></div></header>
+                        <button class="analytics-zscore-toggle" type="button" data-zscore-toggle role="switch" aria-checked="true" aria-label="{% translate 'Show z-score' %}"><span>{% translate "Z-score" %}</span><span class="analytics-mini-switch" aria-hidden="true"><span></span></span></button>
+                        <div class="analytics-chart-tools" role="group" aria-label="{% translate 'Chart date range' %}" data-zoom-tools hidden><button type="button" class="button" data-reset-zoom disabled>{% translate "Reset zoom" %}</button></div>
+                        </div>
+                        <div class="analytics-chart-legend"><span><i class="analytics-legend-line" aria-hidden="true"></i>{% translate "Messages" %}</span><span><i class="analytics-legend-line analytics-legend-line--mean" aria-hidden="true"></i>{% translate "Mean" %}</span><span data-zscore-decoration><i class="analytics-legend-line analytics-legend-line--zscore" aria-hidden="true"></i>{% translate "Z-score" %}</span><span data-zscore-decoration>±2σ</span><output data-readout="activity">—</output></div>
+                        <div class="analytics-chart-frame" data-chart="activity"><div class="analytics-chart-skeleton" aria-hidden="true">{% for i in "123456789012345678" %}<span></span>{% endfor %}</div></div>
+                        <p class="analytics-chart-note" data-zscore-decoration>{% translate "Z-scores compare periods containing messages in this selection. Empty periods have no score; a single or constant series has a score of zero." %}</p>
+                    </article>
+                </div>
+                <p class="analytics-interaction-hint">{% translate "Hover or use arrow keys to inspect. Drag across a chart to zoom into a date range." %}</p>
+                <span class="visually-hidden" aria-live="polite" data-chart-announcement></span>
+                <details class="technical-details analytics-data-table">
+                    <summary>{% translate "View period data" %}<span class="analytics-table-count" data-table-count></span></summary>
+                    <div class="analytics-table-toolbar"><p>{% translate "The values behind the chart." %}</p><button type="button" class="button" data-export disabled>{% translate "Export CSV" %}</button></div>
+                    <div class="table-wrap"><table><caption class="visually-hidden">{% translate "Message frequency and z-score by period" %}</caption><thead><tr><th scope="col">{% translate "Period" %}</th><th scope="col">{% translate "Messages" %}</th><th scope="col">{% translate "Z-score" %}</th></tr></thead><tbody data-period-table><tr><td colspan="3">{% translate "Loading statistics…" %}</td></tr></tbody></table></div>
+                    <div class="analytics-table-pagination"><button type="button" class="button" data-table-page="-1" disabled>{% translate "Previous" %}</button><span data-table-page-label></span><button type="button" class="button" data-table-page="1" disabled>{% translate "Next" %}</button></div>
+                </details>
+            </div>
+    </form>
+    <div class="analytics-toast" role="alert" aria-atomic="true" data-analytics-error hidden>
+        <span class="analytics-toast-text" data-analytics-error-text></span>
+        <a href="{% url 'app_dashboard:login' %}" data-analytics-login hidden>{% translate "Sign in" %}</a>
+        <button class="button button-quiet analytics-toast-close" type="button" data-analytics-error-close aria-label="{% translate 'Dismiss notification' %}"><span aria-hidden="true">×</span></button>
+    </div>
+    <article class="panel analytics-entity-panel" data-entity-panel data-endpoint="{% url 'app_dashboard:entities' %}" aria-labelledby="entity-cloud-heading" aria-busy="true">
+        <div class="analytics-chart-topbar">
+            <header class="analytics-chart-heading"><div><p class="analytics-eyebrow">{% translate "Named entities" %}</p><h2 id="entity-cloud-heading">{% translate "Entity cloud" %}</h2></div></header>
+            <div class="entity-cloud-controls">
+                <details class="entity-type-picker" data-entity-types>
+                    <summary><span>{% translate "Entity types" %}</span><span data-entity-type-summary>{% translate "All types" %}</span></summary>
+                    <div class="entity-type-options">
+                        <button type="button" class="button" data-entity-all-types>{% translate "All types" %}</button>
+                        <fieldset><legend class="visually-hidden">{% translate "Include entity types" %}</legend>
+                            {% for code, description in entity_types %}<label title="{{ description }}"><input type="checkbox" value="{{ code }}" data-entity-type><span>{{ code }}</span></label>{% endfor %}
+                        </fieldset>
+                    </div>
+                </details>
+                <label class="entity-cloud-weight-label" for="entity-cloud-weight">{% translate "Size by" %}<select id="entity-cloud-weight" data-entity-order><option value="messages">{% translate "Messages" %}</option><option value="appearances">{% translate "Appearances" %}</option></select></label>
+            </div>
+        </div>
+        <div class="entity-cloud-meta"><p data-entity-selection>{% translate "Same date range and message filters as above." %}</p><span role="status" data-entity-status>{% translate "Loading entities…" %}</span></div>
+        <div class="entity-cloud-error" role="alert" data-entity-error hidden><span data-entity-error-text></span><button type="button" class="button" data-entity-retry>{% translate "Try again" %}</button></div>
+        <div class="entity-cloud-layout">
+            <div class="entity-cloud-visual">
+                <div class="entity-cloud-frame" data-entity-frame>
+                    <ul class="entity-cloud-words" data-entity-cloud aria-label="{% translate 'Entities ranked by frequency' %}"></ul>
+                    <div class="entity-cloud-placeholder" data-entity-placeholder><span class="analytics-skeleton-value"></span><span class="analytics-skeleton-value"></span><span class="analytics-skeleton-value"></span></div>
+                    <div class="entity-cloud-empty" data-entity-empty hidden><strong>{% translate "No entities in this selection." %}</strong><p>{% translate "Try a wider range or different entity types." %}</p></div>
+                </div>
+                <p class="entity-cloud-readout" data-entity-readout aria-live="polite">{% translate "Select an entity to browse its messages." %}</p>
+                <p class="entity-cloud-note" data-entity-coverage></p>
+            </div>
+            <div class="entity-ranking-table-wrap" tabindex="0" role="region" aria-label="{% translate 'Entity counts' %}">
+                <table class="entity-ranking-table"><caption>{% translate "Top entities · exact counts" %}</caption><thead><tr><th scope="col">{% translate "Entity" %}</th><th scope="col">{% translate "Type" %}</th><th scope="col">{% translate "Messages" %}</th><th scope="col">{% translate "Appearances" %}</th></tr></thead><tbody data-entity-table><tr><td colspan="4">{% translate "Loading entities…" %}</td></tr></tbody></table>
+            </div>
+        </div>
+    </article>
+    <noscript><p class="alert">{% translate "Enable JavaScript to load and interact with the charts." %}</p></noscript>
+</section>
+{{ analytics_labels|json_script:"analytics-labels" }}
+{{ analytics_presets|json_script:"analytics-presets" }}
+{{ entity_cloud_labels|json_script:"entity-cloud-labels" }}
+{% endblock %}
+{% block extra_scripts %}<script src="{% dashboard_static 'app_dashboard/entities.js' %}"></script><script src="{% dashboard_static 'app_dashboard/analytics.js' %}"></script>{% endblock %}

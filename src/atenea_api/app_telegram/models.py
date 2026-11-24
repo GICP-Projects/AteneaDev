@@ -1,12 +1,17 @@
+import re
+import uuid
+
 from django.db import models
 from django.utils import timezone
 from django.core.validators import URLValidator
 from django.contrib.postgres.fields import ArrayField
+from django.contrib.postgres.indexes import GinIndex
 from django.contrib.contenttypes.fields import GenericRelation
 from phonenumber_field.modelfields import PhoneNumberField
 from app_base.models import BaseModel, QueryItem, LanguageField
-from app_entity.models import AnnotatedEntity
-from app_metadata.models import EmbeddingsItem, SimilarityCategory
+from app_entity.models import AnnotatedEntity, NERState
+from app_metadata.models import EmbeddingsItem, SentimentState, SimilarityCategory
+from app_telegram.enums import ExternalUrlStatus, MediaStatus
 
 
 # ==================================================================
@@ -83,6 +88,9 @@ class SeedItem(BaseModel):
         )
     )
 
+    class Meta:
+        indexes = [GinIndex(fields=["tags"], name="seed_tags_gin_idx")]
+
 
 # ==================================================================
 # 1.0 - Telegram Keys Item (SuperGroups/Groups/Channels)
@@ -151,6 +159,8 @@ class BaseTelegramEntity(BaseModel):
     The related_name for this model will be: `model_class_name (in lowercase) + s_related`
     e.g: roomitems_related  or useritems_related
     """
+    USERNAME_PATTERN = r"[A-Za-z0-9_]+"
+
     query_items = GenericRelation(QueryItem)
 
     # Common main info
@@ -163,7 +173,7 @@ class BaseTelegramEntity(BaseModel):
     lang = LanguageField(blank=True, null=True) 
     seed_item = models.ForeignKey(
         SeedItem,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
         related_name="%(class)ss_related", # e.g roomitems_related | %(class)s = roomitem 
         null=True
     )
@@ -207,6 +217,45 @@ class BaseTelegramEntity(BaseModel):
         )
     )
 
+    @staticmethod
+    def normalize_username(username):
+        """Normalize a username for case-insensitive comparisons.
+
+        Parameters
+        ----------
+        username : str or None
+            Telegram username, optionally prefixed with @.
+
+        Returns
+        -------
+        str
+            Case-folded username without leading @, or an empty string.
+        """
+        return (username or "").lstrip("@").casefold()
+
+    @classmethod
+    def build_public_link(cls, username):
+        """Build the canonical public URL shared by Rooms, users and bots.
+
+        Parameters
+        ----------
+        username : str or None
+            Telegram username, optionally prefixed with @.
+
+        Returns
+        -------
+        str
+            Lowercase https://t.me/<username> URL without a trailing slash.
+
+        Raises
+        ------
+        ValueError
+            The username is missing or contains unsupported characters.
+        """
+        if not re.fullmatch(cls.USERNAME_PATTERN, (username or "").lstrip("@")):
+            raise ValueError("A public Telegram username is required")
+        return f"https://t.me/{cls.normalize_username(username)}"
+
     class Meta:
         abstract = True
 
@@ -224,6 +273,12 @@ class RoomItem(BaseTelegramEntity):
     )
     unique_name = models.CharField(max_length=256, blank=True, null=True) # If None = Private Channel and link = invitiation
     title = models.CharField(max_length=256, blank=True)
+    username_history = models.JSONField(default=list, blank=True, editable=False)
+    username_checked_at = models.DateTimeField(null=True, blank=True, editable=False)
+    metadata_sync_pending_at = models.DateTimeField(null=True, blank=True, editable=False)
+    metadata_sync_pending_fields = ArrayField(
+        models.CharField(max_length=32), default=list, blank=True, editable=False,
+    )
 
     # Room meta-info
     is_channel =  models.BooleanField(
@@ -278,6 +333,9 @@ class RoomItem(BaseTelegramEntity):
             "of those that are no longer of interest"
         )   
     )
+
+    class Meta:
+        indexes = [GinIndex(fields=["tags"], name="room_tags_gin_idx")]
 
 
 # ==================================================================
@@ -359,20 +417,27 @@ class MessageItem(BaseModel):
     ]
     media_type = models.CharField(max_length=16, choices=TYPE_CHOICES)
 
-    text = models.TextField(blank=True, null=True)
+    # The content and language are fixed at ingestion; forms must not edit them.
+    text = models.TextField(blank=True, null=True, editable=False)
     
     # Contains a cleaned version of the text. Entities start/end offsets point to
     # this field (That's why the fieldname is 'annotated_text')
     annotated_text = models.TextField(
         blank=True, 
         null=True,
+        editable=False,
         help_text=(
             "Contains a cleaned version of the text. Entities start/end "
             "offsets point to this field (That's why it is 'annotated'"
         )
     )
+    # Filled for newly processed/created messages when available.  Historical
+    # rows intentionally remain null until an explicit maintenance pass.
+    ner_input_hash = models.CharField(max_length=64, blank=True, null=True)
 
     entities = GenericRelation(AnnotatedEntity)
+    ner_states = GenericRelation(NERState)
+    sentiment_states = GenericRelation(SentimentState)
 
     # EMBEDDINGS
     embeddings = models.OneToOneField(
@@ -405,7 +470,7 @@ class MessageItem(BaseModel):
     # Extra info
     created_at = models.DateTimeField(null=True)
     stored_date = models.DateTimeField(default=timezone.now, editable=False, null=True)
-    lang = LanguageField(blank=True) 
+    lang = LanguageField(blank=True, editable=False)
     views = models.IntegerField(
         default=None, 
         null=True,
@@ -470,6 +535,7 @@ class MessageItem(BaseModel):
     class Meta:
         indexes = [
             models.Index(fields=['created_at', 'id']),
+            models.Index(fields=['stored_date', 'id'], name='msg_stored_date_id_idx'),
         ]
 
 
@@ -479,18 +545,12 @@ class MessageItem(BaseModel):
 class TelegramMediaItem(BaseModel):
     """Metadata for a Telegram message media file stored in S3-compatible storage."""
 
-    PENDING = "pending"
-    DOWNLOADED = "downloaded"
-    SKIPPED = "skipped"
-    FAILED = "failed"
-    DELETED = "deleted"
-    STATUS_CHOICES = [
-        (PENDING, "Pending"),
-        (DOWNLOADED, "Downloaded"),
-        (SKIPPED, "Skipped"),
-        (FAILED, "Failed"),
-        (DELETED, "Deleted"),
-    ]
+    PENDING = MediaStatus.PENDING.value
+    DOWNLOADED = MediaStatus.DOWNLOADED.value
+    SKIPPED = MediaStatus.SKIPPED.value
+    FAILED = MediaStatus.FAILED.value
+    DELETED = MediaStatus.DELETED.value
+    STATUS_CHOICES = MediaStatus.choices
 
     RISK_LOW = "low"
     RISK_MEDIUM = "medium"
@@ -546,12 +606,9 @@ class TelegramMediaItem(BaseModel):
 class TelegramExternalUrlItem(BaseModel):
     """Download-like external URL detected in an already stored Telegram message."""
 
-    NOT_DOWNLOADED = "not_downloaded"
-    DELETED = "deleted"
-    STATUS_CHOICES = [
-        (NOT_DOWNLOADED, "Not downloaded"),
-        (DELETED, "Deleted"),
-    ]
+    NOT_DOWNLOADED = ExternalUrlStatus.NOT_DOWNLOADED.value
+    DELETED = ExternalUrlStatus.DELETED.value
+    STATUS_CHOICES = ExternalUrlStatus.choices
 
     message = models.ForeignKey(
         MessageItem,
@@ -584,3 +641,17 @@ class TelegramExternalUrlItem(BaseModel):
             models.Index(fields=["room", "status"]),
             models.Index(fields=["last_seen_at", "id"]),
         ]
+
+
+class EntityAnalyticsOutbox(models.Model):
+    """Exact pending ClickHouse insert blocks; deleted after acknowledgement.
+
+    The PostgreSQL sequence is also the monotonically increasing state version.
+    There is no mirror of the analytical fact table in PostgreSQL.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    blocks = models.JSONField(default=list)
+    next_block = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)

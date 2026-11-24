@@ -65,17 +65,16 @@ def test_populate_pipeline_schedules_only_valid_unseeded_seeds(
     seed_factory(link="https://t.me/already_seeded", is_seeded=True)
     seed_factory(link="https://t.me/invalid_seed", is_valid=False)
 
-    with (
-        patch("app_telegram.services.pipelines.group") as group,
-        patch("app_telegram.services.pipelines.bulk_add_query_relationships_with_pks"),
-    ):
-        group.return_value.apply_async.return_value = None
-        count = populate_pipeline()
+    job = Mock(total_items=1)
+    with patch(
+        "app_telegram.services.pipelines.create_populate_job_from_queryset",
+        return_value=(job, True),
+    ) as create_job:
+        result = populate_pipeline()
 
-    assert count == 1
-    scheduled_group = group.call_args.args[0]
-    assert len(scheduled_group) == 1
-    assert str(valid.pk) in repr(scheduled_group[0])
+    assert result == {"items_count": 1, "job_id": str(job.id)}
+    queryset = create_job.call_args.args[0]
+    assert list(queryset.values_list("pk", flat=True)) == [valid.pk]
 
 
 class FakeChannel:

@@ -1,0 +1,131 @@
+{% extends "app_dashboard/base.html" %}
+{% load static i18n %}
+{% block title %}{% translate "Jobs" %}{% endblock %}
+{% block content %}
+<div class="page-heading">
+    <div>
+        <p class="eyebrow">{% translate "Operations" %}</p>
+        <h1>{% translate "Jobs" %}</h1>
+        <p class="muted">{% translate "Monitor operations and their Batch progress." %}</p>
+    </div>
+    <a class="button button-primary" href="{% url 'app_dashboard:job-new' %}">{% translate "Create Job" %}</a>
+</div>
+
+<section class="metric-grid" aria-label="{% translate 'Capacity summary' %}">
+    <div class="metric-card"><span>{% translate "Active Jobs" %}</span><strong>{{ capacity.active_jobs }}</strong></div>
+    <div class="metric-card"><span>{% translate "Active Batches" %}</span><strong>{{ capacity.active_batches }}</strong></div>
+    <div class="metric-card"><span>{% translate "Jobs shown" %}</span><strong>{{ jobs|length }}</strong></div>
+</section>
+
+{% if retryable_message_jobs %}
+<section class="panel" aria-label="{% translate 'Message processing recovery' %}">
+    <p>{% blocktranslate count count=retryable_message_jobs %}{{ count }} message processing Job has failed Batches to retry.{% plural %}{{ count }} message processing Jobs have failed Batches to retry.{% endblocktranslate %}</p>
+    <form method="post" action="{% url 'app_dashboard:retry-message-processing' %}">
+        {% csrf_token %}
+        <button class="button button-warning" type="submit">{% translate "Retry all pending message processing" %}</button>
+    </form>
+</section>
+{% endif %}
+
+<form class="filter-bar" method="get" aria-label="{% translate 'Filter Jobs' %}">
+    <div class="filter-primary-row">
+        <div class="filter-control">{{ job_filter_form.status.label_tag }}{{ job_filter_form.status }}</div>
+        <div class="filter-control">{{ job_filter_form.mode.label_tag }}{{ job_filter_form.mode }}</div>
+        <button class="button" type="submit">{% translate "Filter" %}</button>
+        {% if filters_active %}<a class="button button-quiet" href="{% url 'app_dashboard:jobs' %}">{% translate "Clear" %}</a>{% endif %}
+    </div>
+    <details class="filter-date-options" data-date-filter
+        data-any-label="{% translate 'Any date' %}"
+        data-selected-label="{% translate 'Dates selected' %}"
+        {% if date_filters_active or job_filter_form.errors %}open{% endif %}>
+        <summary>
+            <span class="filter-date-summary">
+                <span class="filter-date-summary-mark" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" focusable="false"><rect x="3.5" y="5.5" width="17" height="15" rx="2"></rect><path d="M7.5 3.5v4M16.5 3.5v4M3.5 10h17"></path></svg>
+                </span>
+                <span class="filter-date-summary-copy">
+                    <strong>{% translate "Date filters" %}</strong>
+                    <small data-date-filter-state>{% if date_filters_active %}{% translate "Dates selected" %}{% else %}{% translate "Any date" %}{% endif %}</small>
+                </span>
+            </span>
+            <span class="filter-date-summary-action">{% translate "Choose dates" %}<span class="filter-date-summary-chevron" aria-hidden="true">⌄</span></span>
+        </summary>
+        <div class="filter-date-panel">
+            <div class="filter-date-range">
+                <div class="filter-date-range-heading">
+                    <strong>{% translate "Started" %}</strong>
+                    <span>{% translate "Optional" %}</span>
+                </div>
+                <div class="filter-date-range-fields">
+                    <div class="filter-date-field">{{ job_filter_form.started_from.label_tag }}{{ job_filter_form.started_from }}</div>
+                    <span class="filter-date-range-arrow" aria-hidden="true">→</span>
+                    <div class="filter-date-field">{{ job_filter_form.started_until.label_tag }}{{ job_filter_form.started_until }}</div>
+                </div>
+            </div>
+            <div class="filter-date-range">
+                <div class="filter-date-range-heading">
+                    <strong>{% translate "Finished" %}</strong>
+                    <span>{% translate "Optional" %}</span>
+                </div>
+                <div class="filter-date-range-fields">
+                    <div class="filter-date-field">{{ job_filter_form.finished_from.label_tag }}{{ job_filter_form.finished_from }}</div>
+                    <span class="filter-date-range-arrow" aria-hidden="true">→</span>
+                    <div class="filter-date-field">{{ job_filter_form.finished_until.label_tag }}{{ job_filter_form.finished_until }}</div>
+                </div>
+            </div>
+            {% for field in job_filter_form %}
+                {% for error in field.errors %}<p class="field-error filter-error">{{ field.label }}: {{ error }}</p>{% endfor %}
+            {% endfor %}
+        </div>
+    </details>
+</form>
+
+{% if jobs %}
+<section class="job-list" aria-label="{% translate 'Job list' %}">
+    {% for job in jobs %}
+    <article class="job-card">
+        <div class="job-card-heading">
+            <div>
+                <p class="eyebrow">{{ job.label }}</p>
+                <h2><a href="{% url 'app_dashboard:job-detail' job.object.pk %}">{% translate "Job" %} {{ job.id|slice:':8' }}</a></h2>
+            </div>
+            {% include "app_dashboard/components/status_badge.html" with status=job.status %}
+        </div>
+        <div class="progress-row">
+            <span>{% translate "Progress" %}</span>
+            {% if job.progress != None %}<strong>{{ job.progress }}%</strong>{% else %}<strong>{% translate "In progress" %}</strong>{% endif %}
+        </div>
+        <div class="progress-track progress-track-{{ job.status.tone }}" aria-label="{% translate 'Job progress' %}">
+            {% if job.progress != None %}<span style="width: {{ job.progress }}%"></span>{% endif %}
+        </div>
+        <dl class="job-date-pills" aria-label="{% translate 'Job dates' %}">
+            <div class="job-date-range-pill{% if not job.started_at and not job.completed_at %} is-empty{% endif %}">
+                <dt>{% translate "Started" %}</dt>
+                <dd>{% if job.started_at %}{{ job.started_at|date:"d/m/Y H:i" }}{% else %}{% translate "Not started" %}{% endif %}</dd>
+                <span class="job-date-range-arrow" aria-hidden="true">→</span>
+                <dt>{% translate "Finished" %}</dt>
+                <dd>{% if job.completed_at %}{{ job.completed_at|date:"d/m/Y H:i" }}{% else %}{% translate "Not finished" %}{% endif %}</dd>
+            </div>
+        </dl>
+        <dl class="compact-stats">
+            <div><dt>{% translate "Processed" %}</dt><dd>{{ job.processed_items }}</dd></div>
+            <div><dt>{% translate "Completed Batches" %}</dt><dd>{{ job.completed_batches }} / {{ job.total_batches }}</dd></div>
+            <div><dt>{% translate "Failed" %}</dt><dd>{{ job.failed_items }}</dd></div>
+        </dl>
+        {% for child in job.children %}
+            {% if child.object.status in child.object.ACTIVE_STATUSES %}
+            <p class="muted"><a href="{% url 'app_dashboard:job-detail' child.object.pk %}">{{ child.label }}</a>: {{ child.status.label }}</p>
+            {% endif %}
+        {% endfor %}
+        <a class="card-link" href="{% url 'app_dashboard:job-detail' job.object.pk %}">{% translate "View details" %} <span aria-hidden="true">→</span></a>
+    </article>
+    {% endfor %}
+</section>
+{% else %}
+<div class="empty-state">
+    <h2>{% translate "No Jobs to show" %}</h2>
+    <p>{% translate "A Job will appear here after you launch an operation." %}</p>
+    <a class="button button-primary" href="{% url 'app_dashboard:job-new' %}">{% translate "Create the first Job" %}</a>
+</div>
+{% endif %}
+{% endblock %}

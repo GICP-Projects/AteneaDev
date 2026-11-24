@@ -35,9 +35,13 @@ uv sync --project src/atenea_api
 ```
 
 ----
-**NOTE**: `django_elasticsearch_dsl_drf` library is out of date and is not compatible with the latest versions of `elasticsearch_dsl` resulting in an error, to fix this I forked a repo with a patch:
-The fork is declared in `pyproject.toml` under `tool.uv.sources`; `uv.lock`
-records the exact Git commit used by an installation.
+**NOTE**: The upstream `django-elasticsearch-dsl-drf` package is incompatible
+with the Elasticsearch client/DSL versions used here, so Atenea uses a patched
+fork. Atenea's own query code imports the DSL bundled with `elasticsearch-py`
+as `elasticsearch.dsl`. The unchanged fork still depends on the compatibility
+distribution `elasticsearch-dsl`, so it remains installed transitively until
+the fork is migrated. The fork is declared in `pyproject.toml` under
+`tool.uv.sources`; `uv.lock` records the exact Git commit used by an installation.
 ----
 
 Create a development environment (**.env.dev**) by copying the .env.example (remove any # comments) and fill it in.
@@ -135,11 +139,28 @@ Initialize Elasticsearch indexes for Django on the first run. [List of commands]
 # Create the indices and their mapping in Elasticsearch
 uv run python manage.py search_index --create
 
+# Initialize ClickHouse entity analytics (after configuring its environment).
+uv run python manage.py init_clickhouse
+
 # or 
 
 # Recreate and repopulate the indices:
 uv run python manage.py search_index --rebuild
 ```
+
+Message statistics and Overview use Elasticsearch; entity rankings use ClickHouse. The NER
+INDEX stage writes message/entity facts from the stored annotations. Manual ORM
+or admin deletions enqueue synchronization jobs; NER suppresses those deletion
+signals while replacing annotations and projects its batch once afterward.
+
+`ELASTICSEARCH_INDEX_SOURCE_BATCH_SIZE` bounds message IDs prepared per batch;
+`ELASTICSEARCH_BULK_CHUNK_SIZE` bounds actions per Elasticsearch request. Both
+default to 2500. `deploy_dev.sh up` initializes ClickHouse before starting workers.
+See [message indexing](pipelines/telegram-index-messages.md) for lexical search,
+analytical facts and retry semantics, and [environment variables](enviroments.md#clickhouse-connection-and-query-resources)
+for query resource limits. `stop-app`/`start-app` preserve the infrastructure
+containers and Redis queues. Development ClickHouse HTTP binds to
+`127.0.0.1:28123`; data persists under `_data/clickhouse`.
 
 ### Run Atenea
 

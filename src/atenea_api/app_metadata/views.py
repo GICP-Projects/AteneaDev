@@ -11,7 +11,11 @@ from app_metadata.serializers import (
     CategoryItemSerializer, 
     FilterDataSerializer
 )
-from app_base.serializers import GenericResponseSerializer, PKsSerializer
+from app_base.serializers import (
+    GenericResponseSerializer,
+    GenericResultResponseSerializer,
+    PKsSerializer,
+)
 from app_base.views import (
     get_and_log_request_data,
     parse_request_data,
@@ -19,7 +23,8 @@ from app_base.views import (
     manage_bulk_destroy_request,
     create_message, 
     create_paginate_response,
-    LoggedValidationError
+    LoggedValidationError,
+    BasePaginator,
 )
 
 
@@ -35,6 +40,7 @@ class CategoryView(viewsets.ViewSet):
     # https://www.django-rest-framework.org/api-guide/throttling/#scopedratethrottle
     throttle_scope = "staff_api" # thorttle_scope to restrict access and control the number of requests     
     permission_classes = [IsAdminUser]
+    pagination_class = BasePaginator
 
     @extend_schema(
         request=CategoryItemSerializer(),
@@ -45,7 +51,7 @@ class CategoryView(viewsets.ViewSet):
         ),
         responses={
             status.HTTP_201_CREATED: OpenApiResponse(
-                response=CategoryItemSerializer(),
+                response=GenericResultResponseSerializer,
                 description="The created category."
             ),
             status.HTTP_400_BAD_REQUEST: OpenApiResponse(
@@ -155,7 +161,7 @@ class CategoryView(viewsets.ViewSet):
         ),
         responses={
             status.HTTP_200_OK: OpenApiResponse(
-                response=CategoryItemSerializer(),
+                response=GenericResultResponseSerializer,
                 description="The updated category."
             ), 
             status.HTTP_400_BAD_REQUEST: OpenApiResponse(
@@ -186,7 +192,7 @@ class CategoryView(viewsets.ViewSet):
             logger.error(
                 f"{ e.__class__.__name__ }: {e}",
             )
-            return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)  
+            return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @extend_schema(
         parameters=[FilterDataSerializer],
@@ -250,7 +256,7 @@ class CategoryView(viewsets.ViewSet):
             "Recalculate the embeddings for all the categories."
         ),
         responses={
-            status.HTTP_200_OK: OpenApiResponse(
+            status.HTTP_202_ACCEPTED: OpenApiResponse(
                 response=GenericResponseSerializer,
                 description="Your request has been sent."
             ),
@@ -260,7 +266,7 @@ class CategoryView(viewsets.ViewSet):
             )
         },
     )
-    @action(methods=['get'], detail=False, url_path='recalculate', url_name='{basename}-recalculate')
+    @action(methods=['post'], detail=False, url_path='recalculate', url_name='{basename}-recalculate')
     def recalculate(self, request):
         token = None
         try:
@@ -270,7 +276,7 @@ class CategoryView(viewsets.ViewSet):
             api.dataitem_recalculate(token, CategoryItemSerializer.Meta.model)
             return create_message(
                 token=token,
-                status_code=status.HTTP_200_OK,
+                status_code=status.HTTP_202_ACCEPTED,
             )
         except Exception as e:
             logger.error(
@@ -346,4 +352,4 @@ class CategoryView(viewsets.ViewSet):
             logger.error(
                 f"{ e.__class__.__name__ }: {e}",
             )
-            return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)  
+            return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -258,6 +258,7 @@ def _get_embedding_source_data(model_class, model_class_text_field_name, model_c
 
     if _model_has_field(model_class, "room"):
         values_kwargs["room_unique_name"] = F("room__unique_name")
+        values_fields.append("room_id")
 
     return list(
         model_class.objects.filter(pk__in=items_pks)
@@ -281,10 +282,10 @@ def _build_embedding_payload(item, embed_item, model_class_name, model_class_rel
         ),
     }
 
-    for field_name in ("lang", "media_type", "room_unique_name", "is_reply"):
+    for field_name in ("lang", "media_type", "room_unique_name", "room_id", "is_reply"):
         value = item.get(field_name)
         if value is not None:
-            payload[field_name] = value
+            payload[field_name] = str(value) if field_name == "room_id" else value
 
     return payload
 
@@ -639,7 +640,11 @@ def calculate_embeddings(
 
         if not data:
             logger.info("No valid %s items found to calculate embeddings.", ModelClass.__name__)
-            return
+            return {
+                "succeeded_ids": [],
+                "failed_ids": [],
+                "skipped_ids": [str(item_id) for item_id in items_pks],
+            }
 
         logger.info(
             "Prepared %s %s items for embeddings in %.3f secs.",
@@ -759,6 +764,7 @@ def calculate_embeddings(
     points_to_upsert = []
     embeds_with_vectors = []
     failed_provider_ids = []
+    failed_source_ids = []
     for (item, embed_item), embedding_vector in zip(records_to_process, embeddings):
         if embedding_vector:
             embed_item.model = model_name
@@ -789,6 +795,14 @@ def calculate_embeddings(
             )
         else:
             failed_provider_ids.append(embed_item.pk)
+            failed_source_ids.append(str(item["pk"]))
+
+    # ``zip`` silently discards source rows if a broken provider returns fewer
+    # vectors than requested. Treat every omitted row as an explicit
+    # per-item failure so the durable Batch never reports a false success.
+    for item, embed_item in records_to_process[len(embeddings):]:
+        failed_provider_ids.append(embed_item.pk)
+        failed_source_ids.append(str(item["pk"]))
 
     if embeds_with_vectors:
         update_vectors_start = time.time()
@@ -831,27 +845,65 @@ def calculate_embeddings(
 
     if not points_to_upsert:
         logger.info("No embeddings were generated for %s items.", ModelClass.__name__)
-        return
+        processed_source_ids = {str(item["pk"]) for item, _ in records_to_process}
+        return {
+            "succeeded_ids": [],
+            "failed_ids": failed_source_ids,
+            "skipped_ids": [str(item_id) for item_id in items_pks if str(item_id) not in processed_source_ids],
+        }
 
     upsert_start = time.time()
-    synced_ids = [point["payload"]["embedding_id"] for point in points_to_upsert]
-    try:
-        upsert_points(
+    point_to_embedding = {
+        str(point["id"]): point["payload"]["embedding_id"]
+        for point in points_to_upsert
+    }
+    point_to_source = {
+        str(point["id"]): str(point["payload"]["source_pk"])
+        for point in points_to_upsert
+    }
+    from app_telegram.models import RoomItem
+    from app_telegram.services.room_reconciliation import room_metadata_write_lock
+
+    room_ids = {point["payload"]["room_id"] for point in points_to_upsert if point["payload"].get("room_id")}
+    # Provider calculation can take minutes. Reload mutable Room data only
+    # after acquiring the same lock used by metadata projection.
+    with room_metadata_write_lock(room_ids):
+        usernames = {
+            str(room_id): username for room_id, username in
+            RoomItem.objects.filter(pk__in=room_ids).values_list("pk", "unique_name")
+        }
+        for point in points_to_upsert:
+            room_id = point["payload"].get("room_id")
+            if room_id in usernames:
+                point["payload"]["room_unique_name"] = usernames[room_id]
+        upsert_result = upsert_points(
             collection_name=collection_name,
             points=points_to_upsert,
             vector_size=len(points_to_upsert[0]["vector"]),
         )
+    # Older direct callers and tests may mock the old no-return contract.  In
+    # that case a successful return means every submitted point was synced.
+    if not isinstance(upsert_result, dict):
+        upsert_result = {"succeeded_point_ids": list(point_to_embedding), "failed_point_ids": []}
+    succeeded_points = {str(point_id) for point_id in upsert_result.get("succeeded_point_ids", [])}
+    failed_points = {str(point_id) for point_id in upsert_result.get("failed_point_ids", [])}
+    # A malformed partial response must not silently mark an unknown point as
+    # synced; conservatively retain it as a real per-element failure.
+    unresolved_points = set(point_to_embedding) - succeeded_points - failed_points
+    failed_points.update(unresolved_points)
+    synced_ids = [point_to_embedding[point_id] for point_id in succeeded_points if point_id in point_to_embedding]
+    qdrant_failed_ids = [point_to_embedding[point_id] for point_id in failed_points if point_id in point_to_embedding]
+    if synced_ids:
         EmbeddingsItem.objects.filter(pk__in=synced_ids).update(
             sync_status=EmbeddingsItem.STATUS_SYNCED,
             sync_error=None,
             synced_at=timezone.now(),
         )
-    except Exception as exc:
-        EmbeddingsItem.objects.filter(pk__in=synced_ids).update(
+    if qdrant_failed_ids:
+        EmbeddingsItem.objects.filter(pk__in=qdrant_failed_ids).update(
             sync_status=EmbeddingsItem.STATUS_FAILED,
-            sync_error=str(exc),
+            sync_error="Qdrant could not persist this vector.",
         )
-        raise
 
     logger.info(
         "%s EmbeddingsItem items were created (bulk_create: %.3f secs), %s existing "
@@ -867,6 +919,14 @@ def calculate_embeddings(
         len(points_to_upsert),
         time.time() - upsert_start,
     )
+    processed_source_ids = {str(item["pk"]) for item, _ in records_to_process}
+    return {
+        "succeeded_ids": [point_to_source[point_id] for point_id in succeeded_points if point_id in point_to_source],
+        "failed_ids": failed_source_ids + [
+            point_to_source[point_id] for point_id in failed_points if point_id in point_to_source
+        ],
+        "skipped_ids": [str(item_id) for item_id in items_pks if str(item_id) not in processed_source_ids],
+    }
 
 
 @shared_task(track_started=True)

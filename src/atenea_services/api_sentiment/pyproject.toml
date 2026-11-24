@@ -1,6 +1,7 @@
 [project]
 name = "atenea-sentiment"
-version = "v18.07.26"
+# This service is released with Atenea, not as an independent Python package.
+version = "0.0.0"
 description = "FastAPI sentiment analysis service for Atenea"
 requires-python = ">=3.11.9,<3.12"
 dependencies = [
@@ -17,7 +18,7 @@ link-mode = "copy"
 
 [dependency-groups]
 dev = [
-    "httpx==0.28.1",
+    "httpx2==2.13.1",
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
 ]

@@ -17,6 +17,13 @@ class GenericResponseSerializer(serializers.Serializer):
     errors = serializers.JSONField(required=False)
 
 
+class GenericResultResponseSerializer(serializers.Serializer):
+    """Envelope for a successful operation returning one serialized resource."""
+
+    token = serializers.UUIDField(allow_null=True)
+    result = serializers.DictField()
+
+
 # ==================================================================
 # =====                 DateRange Serializer                  ======
 # ==================================================================
@@ -268,3 +275,10 @@ class PKsSerializer(serializers.Serializer):
         min_length=1,
         max_length=1000 
     )
+
+
+class CountResponseSerializer(serializers.Serializer):
+    """An unpaginated total for a filtered collection."""
+
+    count = serializers.IntegerField(min_value=0)
+    token = serializers.UUIDField(allow_null=True)

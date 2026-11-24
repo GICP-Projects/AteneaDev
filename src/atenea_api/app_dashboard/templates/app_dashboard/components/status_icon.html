@@ -1,0 +1,8 @@
+{% load i18n %}
+<span class="status-symbol status-{{ status.tone }}{% if status.animated %} is-animated{% endif %}" role="img" aria-label="{{ status.label }}" title="{{ status.label }}" tabindex="0">
+    <svg class="status-svg" aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+        <circle class="status-ring" cx="12" cy="12" r="9"></circle>
+        <path class="status-mark" d="M7 12.5 10.5 16 17 8.5"></path>
+    </svg>
+    <span class="visually-hidden">{{ status.label }}</span>
+</span>

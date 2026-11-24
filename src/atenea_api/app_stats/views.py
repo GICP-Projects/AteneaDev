@@ -1,7 +1,13 @@
 from rest_framework import viewsets, status
-from rest_framework.permissions import IsAdminUser
+from rest_framework.permissions import IsAuthenticated
 from drf_spectacular.utils import extend_schema, OpenApiResponse
-from app_base.views import parse_request_data, create_message, LoggedValidationError, create_paginate_response
+from app_base.views import (
+    BasePaginator,
+    parse_request_data,
+    create_message,
+    LoggedValidationError,
+    create_paginate_response,
+)
 from app_base.serializers import GenericResponseSerializer
 from .serializers import StatsMsgSerializer, StatsResultSerializer
 from .services.api import get_message_stats
@@ -21,7 +27,8 @@ class MessageStatsViewSet(viewsets.ViewSet):
     API ViewSet for message statistics.
     """
     throttle_scope = "staff_api"
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAuthenticated]
+    pagination_class = BasePaginator
 
     @extend_schema(
         parameters=[StatsMsgSerializer],
@@ -78,4 +85,3 @@ class MessageStatsViewSet(viewsets.ViewSet):
                 f"{ e.__class__.__name__ }: {e}",
             )
             return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
-

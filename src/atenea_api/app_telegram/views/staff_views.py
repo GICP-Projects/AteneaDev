@@ -1,10 +1,13 @@
 from rest_framework import viewsets, status
 from rest_framework.response import Response
-from rest_framework.permissions import IsAdminUser
+from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from django.conf import settings
+from django.urls import reverse
 from drf_spectacular.utils import (
     extend_schema,
+    extend_schema_view,
     OpenApiResponse,
 )
 from app_telegram.services import api
@@ -15,6 +18,7 @@ from app_telegram.serializers import (
     FilterRoomSerializer, 
     ScanRoomSerializer,
     FilterMsgSerializer,
+    NERFilterMsgSerializer,
     ScanRepliesMsgSerializer,
     EmbedFilterMsgSerializer,
     DownloadableCatalogSerializer,
@@ -25,17 +29,32 @@ from app_telegram.serializers import (
     TelegramAuthSerializer,
     FilterTelegramAuthSerializer,
     SimpleMessageFilterSerializer,
+    MessageRetrievalFilterSerializer,
     MessageVectorSerializer,
-    MessageDetailSerializer
+    MessageDetailSerializer,
+    EntityRankingFilterSerializer,
+    EntityRankingResponseSerializer,
 )
-from app_base.serializers import GenericResponseSerializer, PKsSerializer
+from app_base.mixins import CountMixin
+from app_telegram.pagination import EntityRankingPaginator
+from app_telegram.services.analytics import (
+    entity_ranking_ordering, entity_ranking_results,
+)
+from app_base.serializers import (
+    CountResponseSerializer,
+    GenericResponseSerializer,
+    GenericResultResponseSerializer,
+    PKsSerializer,
+)
 from app_base.views import (
     manage_crud_request,
     manage_bulk_destroy_request,
     parse_request_data,
     create_message, 
     create_paginate_response,
-    LoggedValidationError
+    LoggedValidationError,
+    BasePaginator,
+    CursorPaginator,
 )
 import logging
 
@@ -59,6 +78,7 @@ class TelegramAuthView(viewsets.ViewSet):
     # https://www.django-rest-framework.org/api-guide/throttling/#scopedratethrottle
     throttle_scope = "staff_api" # thorttle_scope to restrict access and control the number of requests     
     permission_classes = [IsAdminUser]
+    pagination_class = BasePaginator
 
     @extend_schema(
         request=TelegramAuthSerializer(),
@@ -69,7 +89,7 @@ class TelegramAuthView(viewsets.ViewSet):
         ),
         responses={
             status.HTTP_201_CREATED: OpenApiResponse(
-                response=TelegramAuthSerializer(),
+                response=GenericResultResponseSerializer,
                 description="The created Telegram credential."
             ),
             status.HTTP_400_BAD_REQUEST: OpenApiResponse(
@@ -160,7 +180,7 @@ class TelegramAuthView(viewsets.ViewSet):
         ),
         responses={
             status.HTTP_200_OK: OpenApiResponse(
-                response=TelegramAuthSerializer(),
+                response=GenericResultResponseSerializer,
                 description="The updated Telegram API credential.",
             ), 
             status.HTTP_400_BAD_REQUEST: OpenApiResponse(
@@ -235,6 +255,7 @@ class SeedView(viewsets.ViewSet):
     # https://www.django-rest-framework.org/api-guide/throttling/#scopedratethrottle
     throttle_scope = "staff_api" # thorttle_scope to restrict access and control the number of requests     
     permission_classes = [IsAdminUser]
+    pagination_class = BasePaginator
 
     @extend_schema(
         request=SeedItemSerializer(),
@@ -245,7 +266,7 @@ class SeedView(viewsets.ViewSet):
         ),
         responses={
             status.HTTP_201_CREATED: OpenApiResponse(
-                response=SeedItemSerializer(),
+                response=GenericResultResponseSerializer,
                 description="The created SeedItem."
             ),
             status.HTTP_400_BAD_REQUEST: OpenApiResponse(
@@ -416,7 +437,7 @@ class SeedView(viewsets.ViewSet):
         ),
         responses={
             status.HTTP_200_OK: OpenApiResponse(
-                response=SeedItemSerializer(),
+                response=GenericResultResponseSerializer,
                 description="The updated seed.",
             ), 
             status.HTTP_400_BAD_REQUEST: OpenApiResponse(
@@ -453,7 +474,8 @@ class SeedView(viewsets.ViewSet):
         tags=['Platform configuration'],
         summary="Delete a seed.",
         description=(
-            "Delete an existing seed."
+            "Delete an existing seed. Related rooms, users and collected messages "
+            "are preserved; their seed references are cleared."
         ),
         responses={
             status.HTTP_204_NO_CONTENT: OpenApiResponse(
@@ -490,7 +512,9 @@ class SeedView(viewsets.ViewSet):
         tags=['Platform configuration'],
         summary="Delete a list of seeds.",
         description=(
-            "Delete a list of seeds by their primary keys (max 1000 items)."
+            "Delete a list of seeds by their primary keys (max 1000 items). "
+            "Related rooms, users and collected messages are preserved; "
+            "their seed references are cleared."
         ),
         responses={
             status.HTTP_204_NO_CONTENT: None,
@@ -520,7 +544,7 @@ class SeedView(viewsets.ViewSet):
             return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)  
 
     @extend_schema(
-        parameters=[SimpleFilterSeedSerializer],
+        request=SimpleFilterSeedSerializer(),
         tags=['Ingest endpoints'],
         summary="Starts populating.",
         description=("It takes all the filtered seeds that haven't yet been added "
@@ -540,7 +564,7 @@ class SeedView(viewsets.ViewSet):
             )
         },
     )
-    @action(methods=['get'], detail=False, url_path='populate', url_name='{basename}-populate')
+    @action(methods=['post'], detail=False, url_path='populate', url_name='{basename}-populate')
     def populate(self, request):
         token = None
         try:
@@ -552,10 +576,20 @@ class SeedView(viewsets.ViewSet):
             if "tag" in params:
                 params["tags"] = params.pop("tag")
 
-            num_populated = api.seed_populate(token, **params)
+            populate_result = api.seed_populate(token, **params)
+            num_populated = (
+                populate_result["items_count"]
+                if isinstance(populate_result, dict)
+                else populate_result
+            )
             return create_message(
                 token, status.HTTP_202_ACCEPTED, 
-                f"The tasks have been queued. {num_populated} seeds will be populated."
+                f"The tasks have been queued. {num_populated} seeds will be populated.",
+                add_results=(
+                    {"job_id": populate_result["job_id"]}
+                    if isinstance(populate_result, dict)
+                    else None
+                ),
             )
         except LoggedValidationError as e:
             logger.info(
@@ -580,7 +614,7 @@ class RoomView(viewsets.ViewSet):
     permission_classes = [IsAdminUser]
 
     @extend_schema(
-        parameters=[ScanRoomSerializer],
+        request=ScanRoomSerializer(),
         tags=['Ingest endpoints'],
         summary="Starts scanning.",
         description=("Starts scanning tasks over the filtered rooms to extract "
@@ -600,7 +634,7 @@ class RoomView(viewsets.ViewSet):
             )
         },
     )
-    @action(methods=['get'], detail=False, url_path='scan', url_name='{basename}-scan')
+    @action(methods=['post'], detail=False, url_path='scan', url_name='{basename}-scan')
     def scan(self, request):
         token = None
         try:
@@ -612,10 +646,15 @@ class RoomView(viewsets.ViewSet):
             if "tag" in params:
                 params["tags"] = params.pop("tag")
 
-            num_rooms = api.room_scanning(token, **params)
+            scan_result = api.room_scanning(token, **params)
+            # Keep the view compatible with integrations that still return the
+            # historic integer while exposing a live Job from the new service.
+            num_rooms = scan_result["items_count"] if isinstance(scan_result, dict) else scan_result
+            job_result = {"job_id": scan_result["job_id"]} if isinstance(scan_result, dict) else None
             return create_message(
                 token, status.HTTP_202_ACCEPTED, 
-                f"The tasks have been queued. {num_rooms} channels/groups will be scanned."
+                f"The tasks have been queued. {num_rooms} channels/groups will be scanned.",
+                add_results=job_result,
             )
         except LoggedValidationError as e:
             logger.info(
@@ -634,7 +673,7 @@ class RoomView(viewsets.ViewSet):
             return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @extend_schema(
-        parameters=[FilterRoomSerializer],
+        request=FilterRoomSerializer(),
         tags=['Ingest endpoints'],
         summary="Recalculate the access of any group/channel without valid access.",
         description=(
@@ -644,7 +683,7 @@ class RoomView(viewsets.ViewSet):
         responses={
             status.HTTP_202_ACCEPTED: OpenApiResponse(
                 response=GenericResponseSerializer,
-                description="The tasks have been queued. <num> channels/groups will be processed."
+                description="A durable access Job was queued for <num> channels/groups; the response includes its job_id."
             ),
             status.HTTP_400_BAD_REQUEST: OpenApiResponse(
                 response=GenericResponseSerializer,
@@ -656,7 +695,7 @@ class RoomView(viewsets.ViewSet):
             )
         },
     )
-    @action(methods=['get'], detail=False, url_path='access', url_name='{basename}-access')
+    @action(methods=['post'], detail=False, url_path='access', url_name='{basename}-access')
     def access(self, request):
         token = None
         try:
@@ -669,10 +708,21 @@ class RoomView(viewsets.ViewSet):
             if "tag" in params:
                 params["tags"] = params.pop("tag")
 
-            num_rooms = api.room_access(token, **params)
+            access_result = api.room_access(token, **params)
+            num_rooms = (
+                access_result["items_count"]
+                if isinstance(access_result, dict)
+                else access_result
+            )
+            job_result = (
+                {"job_id": access_result["job_id"]}
+                if isinstance(access_result, dict)
+                else None
+            )
             return create_message(
                 token, status.HTTP_202_ACCEPTED, 
-                f"The tasks have been queued. {num_rooms} channels/groups will be processed."
+                f"The access ProcessingJob has been queued. {num_rooms} channels/groups will be processed.",
+                add_results=job_result,
             )
         except LoggedValidationError as e:
             logger.info(
@@ -691,21 +741,143 @@ class RoomView(viewsets.ViewSet):
             return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-class MessageView(viewsets.ViewSet):
+@extend_schema_view(
+    count=extend_schema(
+        parameters=[MessageRetrievalFilterSerializer],
+        tags=["Data Retrieval endpoints"],
+        summary="Count stored messages matching the filters.",
+        description=(
+            "Count the complete filtered selection without pagination. "
+            "The total reflects the time of this request; data may change during cursor traversal."
+        ),
+    ),
+)
+class MessageView(CountMixin, viewsets.GenericViewSet):
     # https://www.django-rest-framework.org/api-guide/throttling/#scopedratethrottle
-    throttle_scope = "staff_api" # thorttle_scope to restrict access and control the number of requests     
+    throttle_scope = "staff_api"
     permission_classes = [IsAdminUser]
+    pagination_class = CursorPaginator
+    serializer_class = MessageDetailSerializer
+
+    # Let any authenticated account query message data while preserving the
+    # admin-only policy for processing and other operational actions.
+    authenticated_read_actions = {
+        "list",
+        "count",
+        "vector",
+        "vector_count",
+        "entities",
+    }
+
+    def get_permissions(self):
+        permission_classes = (
+            [IsAuthenticated]
+            if self.action in self.authenticated_read_actions
+            else self.permission_classes
+        )
+        return [permission() for permission in permission_classes]
+
+    def get_message_filters(self):
+        """Validate and log once, even if the queryset is requested again."""
+        if not hasattr(self, "_message_filters"):
+            params, self.query_token = parse_request_data(
+                self.request, MessageRetrievalFilterSerializer,
+            )
+            self._message_filters = _normalize_tag_params(params)
+        return self._message_filters
+
+    def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return MessageDetailSerializer.Meta.model.objects.none()
+        params = self.get_message_filters()
+        if self.action in {"vector", "vector_count"}:
+            return api.get_messages_embeddings(**params)
+        return api.get_messages(**params)
+
+    def _message_list_response(self, request, serializer_class, page_size):
+        try:
+            queryset = self.filter_queryset(self.get_queryset())
+            return create_paginate_response(
+                token=self.query_token,
+                queryset=queryset,
+                request=request,
+                serializer_class=serializer_class,
+                max_items_page=page_size,
+                pagination_class=self.pagination_class,
+                pagination_kwargs={"ordering": ("created_at", "id")},
+            )
+        except ValidationError as error:
+            return create_message(
+                getattr(error, "token", None) or getattr(self, "query_token", None),
+                status.HTTP_400_BAD_REQUEST,
+                "There were some issues with the input data.",
+                add_errors=error.detail,
+            )
+        except Exception:
+            logger.exception("Unable to retrieve messages.")
+            return create_message(getattr(self, "query_token", None), status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @extend_schema(
-        parameters=[ScanRepliesMsgSerializer],
+        parameters=[EntityRankingFilterSerializer],
+        tags=["Data Retrieval endpoints"],
+        summary="Rank entities within filtered messages.",
+        description=(
+            "Ranks per-message entity facts and sums their occurrences. "
+            "Uses /tg/msg room, tag, tag_match, date, stored_since and reply filters, "
+            "plus entity_type and entity_name. "
+            "order=messages (default) sorts by message_count, then appearance_count; "
+            "order=appearances reverses those priorities. Entity UUID breaks ties. "
+            "Follow signed next/previous cursors; page-size defaults to 60, maximum 100. "
+            "No total ranking count is computed. Each result includes messages_url for "
+            "paginated access to its message IDs and links with the same filters. "
+            "Counts cover messages with current NER annotations. "
+            "Pagination reads live data; changing counts can move entities between pages. "
+            "Each page still aggregates the matching counts."
+        ),
+        responses={200: EntityRankingResponseSerializer, 400: GenericResponseSerializer},
+    )
+    @action(methods=["get"], detail=False, url_path="entities", pagination_class=None)
+    def entities(self, request):
+        token = None
+        try:
+            params, token = parse_request_data(request, EntityRankingFilterSerializer)
+            params = _normalize_tag_params(params)
+            entity_type = params.pop("entity_type", None)
+            entity_name = params.pop("entity_name", None)
+            order = params.pop("order")
+            params.pop("cursor", None)
+            page_size = params.pop("page_size", 60)
+            paginator = EntityRankingPaginator(
+                page_size=page_size, is_authenticated=True,
+                ordering=entity_ranking_ordering(order),
+            )
+            page = paginator.paginate_ranking(
+                params, request, entity_type=entity_type, entity_name=entity_name,
+                ordering=entity_ranking_ordering(order),
+            )
+            results = entity_ranking_results(
+                page, params, messages_url=request.build_absolute_uri(reverse("msg-staff-list")),
+            )
+            return paginator.get_paginated_response(results, token=token)
+        except ValidationError as error:
+            return create_message(
+                getattr(error, "token", None) or token, status.HTTP_400_BAD_REQUEST,
+                "There were some issues with the input data.", add_errors=error.detail,
+            )
+        except Exception:
+            logger.exception("Unable to rank message entities.")
+            return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @extend_schema(
+        request=ScanRepliesMsgSerializer(),
         tags=['Ingest endpoints'],
         summary="Starts scanning replies from channels.",
-        description=("Starts scanning tasks over the filtered channels (not groups) to extract "
-                     "from their messages any reply."),
+        description=("Selects parent messages from eligible channels and scans their discussion "
+                     "comments in credential-specific message batches."),
         responses={
             status.HTTP_202_ACCEPTED: OpenApiResponse(
                 response=GenericResponseSerializer,
-                description="The tasks have been queued. The message of <num> channels will be scanned."
+                description="The tasks have been queued; results report selected parent messages and rooms."
             ),
             status.HTTP_400_BAD_REQUEST: OpenApiResponse(
                 response=GenericResponseSerializer,
@@ -717,8 +889,14 @@ class MessageView(viewsets.ViewSet):
             )
         },
     )
-    @action(methods=['get'], detail=False, url_path='scan', url_name='{basename}-scan')
+    @action(methods=['post'], detail=False, url_path='scan', url_name='{basename}-scan')
     def scan(self, request):
+        """Validate a comments launch and return selected parent/room counts.
+
+        The request supplies message filters and per-parent limits. Persist a
+        query and durable root/child Jobs through the API; return HTTP 202 with
+        their IDs and counts, or a validation/server error response.
+        """
         token = None
         try:
             params, token = parse_request_data(
@@ -729,10 +907,12 @@ class MessageView(viewsets.ViewSet):
             if "tag" in params:
                 params["tags"] = params.pop("tag")
 
-            num_rooms = api.msg_scanning_comments(token, **params)
+            scan_result = api.msg_scanning_comments(token, **params)
             return create_message(
                 token, status.HTTP_202_ACCEPTED, 
-                f"The tasks have been queued. {num_rooms} channels/groups will be scanned."
+                f"The tasks have been queued. {scan_result['items_count']} parent messages "
+                f"in {scan_result['rooms_count']} channels will be scanned for comments.",
+                add_results=scan_result,
             )
         except LoggedValidationError as e:
             logger.info(
@@ -751,7 +931,7 @@ class MessageView(viewsets.ViewSet):
             return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @extend_schema(
-        parameters=[MediaDownloadSerializer],
+        request=MediaDownloadSerializer(),
         tags=['Data processing endpoints'],
         summary="Download Telegram media files from already scanned messages.",
         description=(
@@ -767,7 +947,7 @@ class MessageView(viewsets.ViewSet):
             status.HTTP_500_INTERNAL_SERVER_ERROR: OpenApiResponse(response=GenericResponseSerializer),
         },
     )
-    @action(methods=['get'], detail=False, url_path='media/download', url_name='{basename}-media-download')
+    @action(methods=['post'], detail=False, url_path='media/download', url_name='{basename}-media-download')
     def media_download(self, request):
         token = None
         try:
@@ -844,7 +1024,7 @@ class MessageView(viewsets.ViewSet):
             return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @extend_schema(
-        parameters=[ExternalUrlCollectSerializer],
+        request=ExternalUrlCollectSerializer(),
         tags=['Data processing endpoints'],
         summary="Collect external downloadable URLs from already scanned messages.",
         description=(
@@ -857,7 +1037,7 @@ class MessageView(viewsets.ViewSet):
             status.HTTP_500_INTERNAL_SERVER_ERROR: OpenApiResponse(response=GenericResponseSerializer),
         },
     )
-    @action(methods=['get'], detail=False, url_path='external-url/collect', url_name='{basename}-external-url-collect')
+    @action(methods=['post'], detail=False, url_path='external-url/collect', url_name='{basename}-external-url-collect')
     def external_url_collect(self, request):
         token = None
         try:
@@ -962,7 +1142,7 @@ class MessageView(viewsets.ViewSet):
             return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @extend_schema(
-        parameters=[FilterMsgSerializer],
+        request=NERFilterMsgSerializer(),
         tags=['Data processing endpoints'],
         summary="Process name entity recognition (NER) in a list of messages.",
         description=("Process name entity recognition (NER) in the filtered messages."),
@@ -981,17 +1161,21 @@ class MessageView(viewsets.ViewSet):
             )
         },
     )
-    @action(methods=['get'], detail=False, url_path='ner', url_name='{basename}-ner')
+    @action(methods=['post'], detail=False, url_path='ner', url_name='{basename}-ner')
     def ner(self, request):
         token = None
         try:
             params, token = parse_request_data(
                 request,
-                FilterMsgSerializer,
+                NERFilterMsgSerializer,
             )
             params = _normalize_tag_params(params)
-            api.msg_ner(token, **params)
-            return create_message(token, status.HTTP_202_ACCEPTED)
+            job, created = api.msg_ner(token, **params)
+            return create_message(
+                token,
+                status.HTTP_202_ACCEPTED,
+                add_results={"job_id": str(job.id), "created": created},
+            )
         except LoggedValidationError as e:
             logger.info(
                 f"{ e.__class__.__name__ }: {e.detail}",
@@ -1009,7 +1193,7 @@ class MessageView(viewsets.ViewSet):
             return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @extend_schema(
-        parameters=[FilterMsgSerializer],
+        request=FilterMsgSerializer(),
         tags=['Data processing endpoints'],
         summary="Index a list of messages.",
         description=("Index a list of messages."),
@@ -1028,7 +1212,7 @@ class MessageView(viewsets.ViewSet):
             )
         },
     )
-    @action(methods=['get'], detail=False, url_path='index', url_name='{basename}-index')
+    @action(methods=['post'], detail=False, url_path='index', url_name='{basename}-index')
     def index(self, request):
         token = None
         try:
@@ -1037,8 +1221,8 @@ class MessageView(viewsets.ViewSet):
                 FilterMsgSerializer,
             )
             params = _normalize_tag_params(params)
-            api.msg_index(token, **params)
-            return create_message(token, status.HTTP_202_ACCEPTED)
+            job_id = api.msg_index(token, **params)
+            return create_message(token, status.HTTP_202_ACCEPTED, add_results={"job_id": str(job_id)})
         except LoggedValidationError as e:
             logger.info(
                 f"{ e.__class__.__name__ }: {e.detail}",
@@ -1056,7 +1240,7 @@ class MessageView(viewsets.ViewSet):
             return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @extend_schema(
-        parameters=[EmbedFilterMsgSerializer],
+        request=EmbedFilterMsgSerializer(),
         tags=['Data processing endpoints'],
         summary="Process embeddings calculation to a list of messages.",
         description=("Process embeddings calculation to a list of messages."),
@@ -1075,7 +1259,7 @@ class MessageView(viewsets.ViewSet):
             )
         },
     )
-    @action(methods=['get'], detail=False, url_path='embed', url_name='{basename}-embed')
+    @action(methods=['post'], detail=False, url_path='embed', url_name='{basename}-embed')
     def embed(self, request):
         token = None
         try:
@@ -1084,8 +1268,8 @@ class MessageView(viewsets.ViewSet):
                 EmbedFilterMsgSerializer,
             )
             params = _normalize_tag_params(params)
-            api.msg_embed(token, **params)
-            return create_message(token, status.HTTP_202_ACCEPTED)
+            job_id = api.msg_embed(token, **params)
+            return create_message(token, status.HTTP_202_ACCEPTED, add_results={"job_id": str(job_id)})
         except LoggedValidationError as e:
             logger.info(
                 f"{ e.__class__.__name__ }: {e.detail}",
@@ -1103,7 +1287,7 @@ class MessageView(viewsets.ViewSet):
             return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @extend_schema(
-        parameters=[FilterMsgSerializer],
+        request=FilterMsgSerializer(),
         tags=['Data processing endpoints'],
         summary="Perform zero-shot classification to a list of messages.",
         description=(
@@ -1125,7 +1309,7 @@ class MessageView(viewsets.ViewSet):
             )
         },
     )
-    @action(methods=['get'], detail=False, url_path='categorize', url_name='{basename}-categorize')
+    @action(methods=['post'], detail=False, url_path='categorize', url_name='{basename}-categorize')
     def categorize(self, request):
         token = None
         try:
@@ -1153,7 +1337,7 @@ class MessageView(viewsets.ViewSet):
             return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @extend_schema(
-        parameters=[FilterMsgSerializer],
+        request=FilterMsgSerializer(),
         tags=['Data processing endpoints'],
         summary="Perform zero-shot classification to a list of messages.",
         description=(
@@ -1175,7 +1359,7 @@ class MessageView(viewsets.ViewSet):
             )
         },
     )
-    @action(methods=['get'], detail=False, url_path='sentiment', url_name='{basename}-sentiment')
+    @action(methods=['post'], detail=False, url_path='sentiment', url_name='{basename}-sentiment')
     def sentimentalize(self, request):
         token = None
         try:
@@ -1184,8 +1368,8 @@ class MessageView(viewsets.ViewSet):
                 FilterMsgSerializer,
             )
             params = _normalize_tag_params(params)
-            api.msg_sentiment(token, **params)
-            return create_message(token, status.HTTP_202_ACCEPTED)
+            job_id = api.msg_sentiment(token, **params)
+            return create_message(token, status.HTTP_202_ACCEPTED, add_results={"job_id": str(job_id)})
         except LoggedValidationError as e:
             logger.info(
                 f"{ e.__class__.__name__ }: {e.detail}",
@@ -1203,15 +1387,20 @@ class MessageView(viewsets.ViewSet):
             return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @extend_schema(
-        parameters=[SimpleMessageFilterSerializer],
+        parameters=[MessageRetrievalFilterSerializer],
         tags=['Data Retrieval endpoints'],
         summary="Retrieve a paginated list of message embeddings.",
-        description=("Retrieve a paginated list of embeddings of the filtered messages."),
+        description=(
+            "Retrieve messages with embeddings in ascending created_at, id order, "
+            "with null dates last. Start without cursor and follow next/previous links; "
+            "the default page-size is 10, with a maximum of 100. The cursor is signed, "
+            "not encrypted, and is bound to this endpoint and its filters. "
+            "Sending page or an invalid cursor returns HTTP 400. Lists contain no count; "
+            "request /api/v1/tg/msg/vector/count separately when needed. "
+            "Traversal reads live data rather than a fixed snapshot."
+        ),
         responses={
-            status.HTTP_200_OK: OpenApiResponse(
-                response=MessageVectorSerializer(many=True),
-                description="A paginated list of message embeddings."
-            ),
+            status.HTTP_200_OK: MessageVectorSerializer(many=True),
             status.HTTP_400_BAD_REQUEST: OpenApiResponse(
                 response=GenericResponseSerializer,
                 description="Validation errors."
@@ -1224,45 +1413,37 @@ class MessageView(viewsets.ViewSet):
     )
     @action(methods=['get'], detail=False, url_path='vector', url_name='{basename}-vector')
     def vector(self, request):
-        token = None
-        try:
-            params, token = parse_request_data(
-                request,
-                SimpleMessageFilterSerializer,
-            )
-            params = _normalize_tag_params(params)
-            
-            queryset = api.get_messages_embeddings(**params)
-            
-            return create_paginate_response(
-                token=token,
-                queryset=queryset,
-                request=request,
-                serializer_class=MessageVectorSerializer,
-            )
-        except LoggedValidationError as e:
-            logger.info(
-                f"{ e.__class__.__name__ }: {e.detail}",
-            )
-            return create_message(
-                e.token, 
-                status.HTTP_400_BAD_REQUEST, 
-                "There were some issues with the input data.",
-                add_errors=e.detail
-            )
-        except Exception as e:
-            logger.error(
-                f"{ e.__class__.__name__ }: {e}",
-            )
-            return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return self._message_list_response(request, MessageVectorSerializer, 10)
 
     @extend_schema(
-        parameters=[SimpleMessageFilterSerializer],
+        parameters=[MessageRetrievalFilterSerializer],
+        tags=["Data Retrieval endpoints"],
+        summary="Count messages with embeddings matching the filters.",
+        description=(
+            "Count the complete filtered selection of messages with embeddings, without pagination. "
+            "The total reflects the time of this request; data may change during cursor traversal."
+        ),
+        responses={
+            status.HTTP_200_OK: CountResponseSerializer,
+            status.HTTP_400_BAD_REQUEST: GenericResponseSerializer,
+        },
+    )
+    @action(methods=["get"], detail=False, url_path="vector/count", pagination_class=None)
+    def vector_count(self, request):
+        return self.count(request)
+
+    @extend_schema(
+        parameters=[MessageRetrievalFilterSerializer],
         tags=['Data Retrieval endpoints'],
         summary="Retrieve a list of (filtered) messages.",
         description=(
-            "This endpoint provides a paginated list of messages, optionally "
-            "filtered by date range and room."
+            "Retrieve stored messages, optionally filtered by date range, room and tags, "
+            "in ascending created_at, id order with null dates last. Start without cursor "
+            "and follow next/previous links; page-size defaults to 100 and is capped at 100. "
+            "The cursor is signed, not encrypted, and is bound to this endpoint and its filters. "
+            "Sending page or an invalid cursor returns HTTP 400. Lists contain no count; "
+            "request /api/v1/tg/msg/count separately when needed. "
+            "Traversal reads live data rather than a fixed snapshot."
         ),
         responses={
             status.HTTP_200_OK: OpenApiResponse(
@@ -1280,33 +1461,4 @@ class MessageView(viewsets.ViewSet):
         },
     )
     def list(self, request):
-        token = None
-        try:
-            params, token = parse_request_data(
-                request,
-                SimpleMessageFilterSerializer,
-            )
-            params = _normalize_tag_params(params)
-            queryset = api.get_messages(**params)
-            return create_paginate_response(
-                token=token,
-                queryset=queryset,
-                request=request,
-                max_items_page=100,
-                serializer_class=MessageDetailSerializer,
-            )
-        except LoggedValidationError as e:
-            logger.info(
-                f"{ e.__class__.__name__ }: {e.detail}",
-            )
-            return create_message(
-                e.token, 
-                status.HTTP_400_BAD_REQUEST, 
-                "There were some issues with the input data.",
-                add_errors=e.detail
-            )
-        except Exception as e:
-            logger.error(
-                f"{ e.__class__.__name__ }: {e}",
-            )
-            return create_message(token, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return self._message_list_response(request, MessageDetailSerializer, 100)

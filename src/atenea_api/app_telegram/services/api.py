@@ -8,8 +8,14 @@ from app_telegram.services.pipelines import (
 )
 from app_telegram.serializers import ANY as TAG_ANY
 from app_telegram.models import RoomItem, SeedItem, TelegramAuth, MessageItem
-from app_base.api import create_advance_filter, bulk_add_query_relationships
-from app_entity.services.pipelines import ner_extraction_msgs_pipeline
+from app_base.api import (
+    array_tag_filter_kwargs,
+    create_advance_filter,
+    bulk_add_query_relationships,
+)
+from app_entity.services.jobs import create_ner_backfill_job
+from app_telegram.services.jobs import TELEGRAM_SCAN_PROCESSOR
+from app_scheduler.models import ProcessingJob
 from app_metadata.services.pipelines import (
     sentiment_classification_msg_pipeline,
     embeddings_msgs_pipeline
@@ -28,6 +34,26 @@ import logging
 
 # Get an instance of a logger
 logger = logging.getLogger(__name__)
+
+
+def _scan_launch_result(total_items, token):
+    """Keep scan's numeric result while exposing its separately tracked live Job."""
+
+    if isinstance(total_items, dict):
+        return total_items
+
+    job = None
+    if token:
+        job = (
+            ProcessingJob.objects.filter(
+                request_token=token,
+                processor=TELEGRAM_SCAN_PROCESSOR,
+                mode=ProcessingJob.LIVE,
+            )
+            .order_by("-created_at")
+            .first()
+        )
+    return {"items_count": total_items, "job_id": str(job.id) if job else None}
 
 
 # ==================================================================
@@ -155,10 +181,8 @@ def seed_list(
                     "lang__in": lang,
                     "is_valid": is_valid,
                     "is_seeded": is_seeded,
+                    **array_tag_filter_kwargs("tags", tags, tag_match),
                 }, 
-                list_filter_fields={
-                    "tags__icontains": {"values": tags, "OR": tag_match == TAG_ANY}
-                }
             )
         )
         .order_by("pk") 
@@ -247,6 +271,7 @@ def room_scanning(
     lastup_max = None,
     max_msgs = 2500,
     update_users = False,
+    check_room = False,
 ):
     """ Scans any room that fits the filter and split the workload into Celery 
     tasks.
@@ -304,10 +329,11 @@ def room_scanning(
         lastup_max=lastup_max,
         max_msgs=max_msgs,
         update_users=update_users,
+        check_room=check_room,
         token=token
     )
 
-    return total_items
+    return _scan_launch_result(total_items, token)
 
 def room_access(
     token = None, 
@@ -319,8 +345,7 @@ def room_access(
     lastup_min = None,
     lastup_max = None,
 ):
-    """ Recalcule the access of any room with `is_valid=False` that fits the filter 
-    and split the workload into Celery tasks.
+    """Recalculate access hashes for matching invalid rooms in a durable Job.
     
     This function serves the endpoint '/room/access'
 
@@ -352,9 +377,9 @@ def room_access(
         Interval start date for the last_update field
 
     Returns
-    ----------
-    items_count: int
-        Number of rooms to be processed.
+    -------
+    dict
+        Number of selected rooms and the durable ProcessingJob ID.
     """
 
     # Call the access wrapper function
@@ -388,12 +413,12 @@ def msg_scanning_comments(
     createdat_max = None,
     stored_since = None,
     max_msgs = 2500,
-    total_msgs = 1250000,
 ):
-    """ Scans any room that fits the filter and split the workload into Celery 
-    tasks.
-    
-    This function serves the endpoint '/room/scan'
+    """Launch comments batches for explicit parent messages matching the filters.
+
+    Serve '/msg/scan'; persist the root/child Jobs and source selection through
+    the pipeline. Return parent/room counts and Job IDs. Invalid settings,
+    filters or database errors propagate to the endpoint.
 
     Parameters
     ----------
@@ -429,14 +454,10 @@ def msg_scanning_comments(
     max_msgs: int, default=2500
         Max number of comments they will be extracted for each msg. 
 
-    total_msgs: int, default=1250000
-        Total number of messages to be extracted globally. In order to avoid an 
-        out-of-control usage of resources
-
     Returns
     ----------
     items_count: int
-        Number of rooms whose messages, which meet the filters, will be processed.
+        Number of selected parent messages. rooms_count reports selected rooms.
 
     """
 
@@ -452,11 +473,10 @@ def msg_scanning_comments(
         createdat_max=createdat_max,
         stored_since=stored_since,
         max_msgs=max_msgs,
-        total_msgs = total_msgs,
         token=token
     )
 
-    return total_items
+    return _scan_launch_result(total_items, token)
 
 
 def msg_media_download(
@@ -589,21 +609,27 @@ def msg_ner(
     stored_since = None,
     lang = [], 
     type = [],
-    block_size = 100000
+    block_size = 100000,
+    refresh = False,
+    reindex = False,
 ):
-    # Use wrapper
-    ner_extraction_msgs_pipeline(
-        room=room,
-        tags=tags,
-        tag_match=tag_match,
-        is_reply=is_reply,
-        createdat_min=createdat_min,
-        createdat_max=createdat_max,
-        stored_since=stored_since,
-        lang=lang,
-        type=type,
-        block_size=block_size,
-        token=token
+    """Compatibility endpoint adapter for the durable backfill API."""
+
+    return create_ner_backfill_job(
+        filters={
+            "room": room,
+            "tags": tags,
+            "tag_match": tag_match,
+            "is_reply": is_reply,
+            "createdat_min": createdat_min,
+            "createdat_max": createdat_max,
+            "stored_since": stored_since,
+            "lang": lang,
+            "type": type,
+            "refresh": refresh,
+        },
+        request_token=token,
+        reindex=reindex,
     )
 
 def msg_sentiment(
@@ -664,7 +690,7 @@ def msg_sentiment(
     block_size: int, default=100000
         Number of items to be read by the database at once.
     """
-    sentiment_classification_msg_pipeline(
+    return sentiment_classification_msg_pipeline(
         room=room,
         tags=tags,
         tag_match=tag_match,
@@ -723,7 +749,7 @@ def msg_index(
         The size of each block of items to be processed in memory from the DB 
         at a time.
     """
-    index_msgs_pipeline(
+    return index_msgs_pipeline(
         room=room,
         tags=tags,
         tag_match=tag_match,
@@ -755,7 +781,7 @@ def msg_embed(
 ):
     
     # Use wrapper
-    embeddings_msgs_pipeline(
+    return embeddings_msgs_pipeline(
         instruct=instruct,
         slot=slot,
         room=room,
@@ -794,7 +820,8 @@ def _func_msg(
         "media_type__in": type,
         "lang__in": lang,
         "is_reply": is_reply,
-        f"{embed_field_name}__isnull": False
+        f"{embed_field_name}__isnull": False,
+        **array_tag_filter_kwargs("room__tags", tags, tag_match),
     }
 
     # Calculate (or re-calculate) embeddings for all the messages
@@ -806,7 +833,6 @@ def _func_msg(
         and_filter_fields=and_filter_fields,
         list_filter_fields={
             "room__unique_name__iexact": {"values": [r.strip() for r in room], "OR": True},
-            "room__tags__icontains": {"values": tags, "OR": tag_match == TAG_ANY},
         },
         apply_distinct=False, # With the current filters there is no risk of duplicates.
         block_size=block_size
@@ -860,6 +886,7 @@ def _filter_messages(
     is_reply=None,
     tags=None,
     tag_match=TAG_ANY,
+    entity=None,
 ):
     """Helper function to apply common filters to a message queryset."""
     if createdat_min:
@@ -882,16 +909,19 @@ def _filter_messages(
         qs = qs.filter(is_reply=is_reply)
 
     if tags:
-        qs = qs.filter(
-            create_advance_filter(
-                list_filter_fields={
-                    "room__tags__icontains": {
-                        "values": tags,
-                        "OR": tag_match == TAG_ANY,
-                    }
-                }
-            )
+        qs = qs.filter(**array_tag_filter_kwargs("room__tags", tags, tag_match))
+
+    if entity:
+        from app_entity.models import AnnotatedEntity
+        from django.contrib.contenttypes.models import ContentType
+
+        annotations = AnnotatedEntity.objects.filter(
+            content_type_id__in=ContentType.objects.filter(
+                app_label=MessageItem._meta.app_label, model=MessageItem._meta.model_name,
+            ).values("pk"),
+            entity_id__in=entity,
         )
+        qs = qs.filter(pk__in=annotations.order_by().values("object_id"))
         
     return qs
 
@@ -903,6 +933,7 @@ def get_messages_embeddings(
     is_reply=None,
     tags=None,
     tag_match=TAG_ANY,
+    entity=None,
 ):
     """Retrieves a filtered list of message embeddings.
 
@@ -938,6 +969,7 @@ def get_messages_embeddings(
         is_reply,
         tags,
         tag_match,
+        entity,
     )
     return qs.order_by('created_at', 'id')
 
@@ -949,6 +981,7 @@ def get_messages(
     is_reply=None,
     tags=None,
     tag_match=TAG_ANY,
+    entity=None,
 ):
     """Retrieves a filtered list of messages.
 
@@ -984,5 +1017,6 @@ def get_messages(
         is_reply,
         tags,
         tag_match,
+        entity,
     )
     return qs.order_by('created_at', 'id')

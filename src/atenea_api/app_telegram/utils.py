@@ -1,6 +1,8 @@
 import re
 from urllib.parse import urlparse
 
+from app_telegram.models import BaseTelegramEntity
+
 
 # ===============================================================
 # ========       TELEGRAM APP UTILS FUNCTIONALITY        ========
@@ -80,25 +82,17 @@ def telegram_link_normalizer(link, rebuild_link = False):
     if hostname not in {"t.me", "www.t.me"}:
         return None
 
-    parsed_link = "t.me" + url_parsed.path
-    # In case of an invitation link 
-    if "joinchat" in parsed_link.lower():
-        # We can't do .lower() to the invitation code, but we want to force 'joinchat' to
-        # be lowercase. 
-        re_to_match = r'^t\.me/joinchat/([\-\w]+)(?:/|$)'
-        extra = "joinchat/" 
-    else:
-        re_to_match = r'^t\.me/(\w+)(?:/|$)'
-        extra = ""
-        parsed_link = parsed_link.lower() # joinchat invitation code can't be set to lower
-
-    match = re.search(
-        re_to_match,
-        parsed_link,
-        flags=re.IGNORECASE if extra else 0,
-    )
-    if match:
-        unique_path = extra + match.group(1)
+    # Invitation tokens are case-sensitive and are not public usernames.
+    if re.match(r"^/joinchat(?:/|$)", url_parsed.path, re.IGNORECASE):
+        invitation = re.match(r"^/joinchat/([-\w]+)(?:/|$)", url_parsed.path, re.IGNORECASE)
+        if not invitation:
+            return None
+        unique_path = "joinchat/" + invitation.group(1)
         return "https://t.me/" + unique_path if rebuild_link else unique_path
-    
-    return None # Wrong link
+
+    match = re.match(rf"^/({BaseTelegramEntity.USERNAME_PATTERN})(?:/|$)", url_parsed.path)
+    if not match:
+        return None
+    if rebuild_link:
+        return BaseTelegramEntity.build_public_link(match.group(1))
+    return BaseTelegramEntity.normalize_username(match.group(1))

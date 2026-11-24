@@ -1,0 +1,98 @@
+{% load i18n %}
+        <article
+            class="dag-node dag-node--{{ task.state }}{% if task.status.animated %} is-live{% endif %}"
+            data-dag-node
+            data-graph-node="{{ task.id }}"
+            data-node-id="{{ task.id }}"
+            data-state="{{ task.state }}"
+            data-node-revision="{{ task.revision }}"
+            data-node-label="{{ task.label }}"
+            data-label-queued="{% translate 'Queued' %}"
+            data-label-retrying="{% translate 'Retrying' %}"
+            data-label-running="{% translate 'Running' %}"
+            data-label-completed="{% translate 'Completed' %}"
+            data-label-failed="{% translate 'Failed' %}"
+            data-label-cancelled="{% translate 'Cancelled' %}"
+            data-batch-detail-json="{{ task.detail_json }}"
+            {% if not task.placeholder %}data-batch-open{% endif %}
+            role="group"
+            aria-label="{{ task.label }} · {{ task.status.label }}"
+        >
+            <span class="dag-port dag-port--in" data-node-id="{{ task.id }}" data-port="in" aria-hidden="true"></span>
+            <span class="dag-port dag-port--out" data-node-id="{{ task.id }}" data-port="out" aria-hidden="true"></span>
+
+            <div class="dag-node-header">
+                <div class="dag-batch-heading">
+                    <span class="dag-node-kind">{% if task.placeholder %}{% translate "Input" %}{% else %}{% translate "Batch" %}{% endif %}</span>
+                    <span class="dag-node-title">
+                        <strong>{{ task.label }}</strong>
+                        {% if not task.placeholder %}<code title="{{ task.node_id }}">{{ task.node_id|slice:':14' }}</code>{% endif %}
+                    </span>
+                </div>
+                <span class="dag-badge dag-badge--{{ task.status.tone }} dag-status-icon"
+                    data-node-status data-dag-tooltip="{{ task.status.label }}" role="img" tabindex="0"
+                    aria-label="{{ task.status.label }}" title="{{ task.status.label }}">
+                    <span data-status-icon aria-hidden="true">{{ task.status.icon|default:"·" }}</span>
+                    <span class="visually-hidden" data-status-label>{{ task.status.label }}</span>
+                </span>
+            </div>
+
+            {% if task.placeholder %}
+                {% if task.handoff_count %}
+                <p class="dag-placeholder-label">
+                    {% blocktranslate count count=task.handoff_count with items=task.item_count item_label=task.item_label %}{{ count }} pending handoff · {{ items }} {{ item_label }} waiting{% plural %}{{ count }} pending handoffs · {{ items }} {{ item_label }} waiting{% endblocktranslate %}
+                </p>
+                {% else %}
+                <p class="dag-placeholder-label">{% translate "No materialized batches yet" %}</p>
+                {% endif %}
+                {% if task.waiting_message %}<p class="dag-placeholder-label">{{ task.waiting_message }}</p>{% endif %}
+            {% elif task.stage_results %}
+            <div class="dag-stage-results" aria-label="{% translate 'Batch stages' %}">
+                {% for stage in task.stage_results %}
+                <div class="dag-stage-unit">
+                    {% if forloop.first and stage.graph_inputs %}
+                    <div class="dag-stage-connector dag-stage-connector--entry" role="group" aria-label="{% translate 'Stage input metrics' %}">
+                        <span aria-hidden="true">↓</span>
+                        <div class="dag-metric-list">
+                            {% include "app_dashboard/jobs/_graph_metrics.html" with metrics=stage.graph_inputs %}
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <button
+                        type="button"
+                        class="dag-stage-result dag-stage-result--{{ stage.status.tone }}"
+                        title="{{ stage.status.label }}"
+                        data-stage-open
+                        data-stage-key="{{ stage.key }}"
+                        aria-label="{{ stage.label }} · {{ stage.status.label }}{% if stage.attempts %} · {% blocktranslate count count=stage.attempts %}{{ count }} attempt{% plural %}{{ count }} attempts{% endblocktranslate %}{% endif %} · {% translate 'Open stage details' %}"
+                    >
+                        <span class="dag-stage-copy">
+                            <strong>{{ stage.label }}</strong>
+                            {% if stage.notice %}<small>{{ stage.notice }}</small>{% endif %}
+                        </span>
+                        <span class="dag-stage-status dag-stage-status--{{ stage.status.tone }}" title="{{ stage.status.label }}" aria-hidden="true">{{ stage.status.icon }}</span>
+                        {% if stage.attempts %}<span class="dag-stage-attempts">↻ {{ stage.attempts }}</span>{% endif %}
+                        {% if stage.state == "failed" %}<span class="dag-stage-incident" aria-label="{% translate 'Stage has an error' %}">!</span>{% endif %}
+                    </button>
+
+                    {% if stage.connector_metrics or not forloop.last %}
+                    <div class="dag-stage-connector" role="group" aria-label="{% translate 'Stage output metrics' %}">
+                        <span aria-hidden="true">↓</span>
+                        {% if stage.connector_metrics %}
+                        <div class="dag-metric-list">
+                            {% include "app_dashboard/jobs/_graph_metrics.html" with metrics=stage.connector_metrics %}
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {% if task.last_error %}<p class="dag-node-error"><strong>!</strong> {{ task.last_error|truncatechars:132 }}</p>{% endif %}
+            {% if not task.placeholder %}<div class="dag-node-footer">
+                <button type="button" class="dag-detail-link" data-open-batch>{% translate "View detail" %} <span aria-hidden="true">↗</span></button>
+            </div>{% endif %}
+        </article>

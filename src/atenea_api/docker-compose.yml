@@ -1,8 +1,38 @@
 services:
+  atenea-clickhouse:
+    image: ${CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:26.8}
+    container_name: prod-clickhouse-atenea
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-atenea}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-atenea}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - ./_prod_data/clickhouse:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user \"$${CLICKHOUSE_USER}\" --password \"$${CLICKHOUSE_PASSWORD}\" --query 'SELECT 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    restart: unless-stopped
+    networks:
+      - atenea-network
+
   atenea-postgres:
     container_name: prod-postgres-atenea
     image: postgres:15-bookworm
-    shm_size: '2gb'
+    shm_size: ${POSTGRES_SHM_SIZE:-1gb}
+    command:
+      - postgres
+      - -c
+      - max_worker_processes=${POSTGRES_MAX_WORKER_PROCESSES:-8}
+      - -c
+      - max_parallel_workers=${POSTGRES_MAX_PARALLEL_WORKERS:-4}
     volumes:
       - ./_prod_data/postgres:/data/postgres
     restart: unless-stopped
@@ -11,6 +41,12 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       PGDATA: /data/postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
     networks:
       - atenea-network
 
@@ -29,21 +65,29 @@ services:
     restart: unless-stopped
 
   atenea-backend:
-    image: gicp/atenea-server:${ATENEA_VERSION:-v18.07.26}
+    image: ghcr.io/srfonso/atenea-api:${ATENEA_VERSION:?Set ATENEA_VERSION}
     container_name: prod-backend-atenea
-    build:
-      context: .
     command: sh -c "python manage.py migrate &&
+                    python manage.py init_clickhouse &&
                     exec gunicorn atenea_api.wsgi:application --worker-class gevent --workers 10 --timeout 300 --log-level debug --bind 0.0.0.0:8000"
     ports:
       - "28111:8000" # Expose only necessary port
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('127.0.0.1',8000),5); s.close()"]
+      interval: 5s
+      timeout: 6s
+      retries: 30
+      start_period: 30s
     networks:
       - atenea-network
       - atenea_services_net
     env_file:
       - ../../.env.prod
     depends_on:
-      - atenea-postgres
+      atenea-postgres:
+        condition: service_healthy
+      atenea-clickhouse:
+        condition: service_healthy
 
   atenea-redis:
     image: "redis:alpine"
@@ -75,12 +119,14 @@ services:
     restart: unless-stopped
 
   atenea-queue-default:
-    image: gicp/atenea-server:${ATENEA_VERSION:-v18.07.26}
+    image: ghcr.io/srfonso/atenea-api:${ATENEA_VERSION:?Set ATENEA_VERSION}
     container_name: prod-default-queue-atenea
-    command: ["bash", "-c", "celery -A atenea_api worker -Q default -n AT1@%h -l INFO --concurrency=10"]
+    command: ["bash", "-c", "celery -A atenea_api worker -Q default -n AT1@%h -l INFO --concurrency=${QUEUE_DEFAULT_CONCURRENCY:-4}"]
     depends_on:
-      - atenea-redis
-      - atenea-backend
+      atenea-redis:
+        condition: service_started
+      atenea-backend:
+        condition: service_healthy
     networks:
       - atenea-network
       - atenea_services_net
@@ -88,24 +134,101 @@ services:
       - ../../.env.prod
 
   atenea-queue-index:
-    image: gicp/atenea-server:${ATENEA_VERSION:-v18.07.26}
+    image: ghcr.io/srfonso/atenea-api:${ATENEA_VERSION:?Set ATENEA_VERSION}
     container_name: prod-index-queue-atenea
-    command: ["bash", "-c", "celery -A atenea_api worker -Q index-q -n AT2@%h -l INFO --concurrency=1"]
+    command: ["bash", "-c", "celery -A atenea_api worker -Q index-q -n AT2@%h -l INFO --concurrency=${QUEUE_INDEX_CONCURRENCY:-1}"]
     depends_on:
-      - atenea-redis
-      - atenea-backend
+      atenea-redis:
+        condition: service_started
+      atenea-backend:
+        condition: service_healthy
     networks:
       - atenea-network
     env_file:
       - ../../.env.prod
 
-  atenea-queue-ner:
-    image: gicp/atenea-server:${ATENEA_VERSION:-v18.07.26}
-    container_name: prod-ner-queue-atenea
-    command: ["bash", "-c", "celery -A atenea_api worker -Q ner-q -n AT3@%h -l INFO --concurrency=2"]
+  atenea-queue-telegram-scan:
+    image: ghcr.io/srfonso/atenea-api:${ATENEA_VERSION:?Set ATENEA_VERSION}
+    container_name: prod-telegram-scan-queue-atenea
+    command: ["bash", "-c", "celery -A atenea_api worker -Q telegram-scan-q -n AT3@%h -l INFO --concurrency=${QUEUE_TELEGRAM_SCAN_CONCURRENCY:-1} --prefetch-multiplier=1"]
     depends_on:
-      - atenea-redis
-      - atenea-backend
+      atenea-redis:
+        condition: service_started
+      atenea-backend:
+        condition: service_healthy
+    networks:
+      - atenea-network
+    env_file:
+      - ../../.env.prod
+
+  atenea-queue-telegram-scan-comments:
+    image: ghcr.io/srfonso/atenea-api:${ATENEA_VERSION:?Set ATENEA_VERSION}
+    container_name: prod-telegram-scan-comments-queue-atenea
+    command: ["bash", "-c", "celery -A atenea_api worker -Q telegram-scan-comments-q -n AT4@%h -l INFO --concurrency=${QUEUE_TELEGRAM_SCAN_COMMENTS_CONCURRENCY:-1} --prefetch-multiplier=1"]
+    depends_on:
+      atenea-redis:
+        condition: service_started
+      atenea-backend:
+        condition: service_healthy
+    networks:
+      - atenea-network
+    env_file:
+      - ../../.env.prod
+
+  atenea-queue-telegram-populate:
+    image: ghcr.io/srfonso/atenea-api:${ATENEA_VERSION:?Set ATENEA_VERSION}
+    container_name: prod-telegram-populate-queue-atenea
+    command: ["bash", "-c", "celery -A atenea_api worker -Q telegram-populate-q -n AT5@%h -l INFO --concurrency=${QUEUE_TELEGRAM_POPULATE_CONCURRENCY:-1} --prefetch-multiplier=1"]
+    depends_on:
+      atenea-redis:
+        condition: service_started
+      atenea-backend:
+        condition: service_healthy
+    networks:
+      - atenea-network
+    env_file:
+      - ../../.env.prod
+
+  # Durable stages transfer Batch UUIDs only.
+  atenea-queue-ner-live:
+    image: ghcr.io/srfonso/atenea-api:${ATENEA_VERSION:?Set ATENEA_VERSION}
+    container_name: prod-ner-live-queue-atenea
+    command: ["bash", "-c", "celery -A atenea_api worker -Q ner-live-q -n AT6@%h -l INFO --concurrency=${QUEUE_NER_LIVE_CONCURRENCY:-1} --prefetch-multiplier=1"]
+    depends_on:
+      atenea-redis:
+        condition: service_started
+      atenea-backend:
+        condition: service_healthy
+    networks:
+      - atenea-network
+      - atenea_services_net
+    env_file:
+      - ../../.env.prod
+
+  atenea-queue-ner-backfill:
+    image: ghcr.io/srfonso/atenea-api:${ATENEA_VERSION:?Set ATENEA_VERSION}
+    container_name: prod-ner-backfill-queue-atenea
+    command: ["bash", "-c", "celery -A atenea_api worker -Q ner-backfill-q -n AT7@%h -l INFO --concurrency=${QUEUE_NER_BACKFILL_CONCURRENCY:-1} --prefetch-multiplier=1"]
+    depends_on:
+      atenea-redis:
+        condition: service_started
+      atenea-backend:
+        condition: service_healthy
+    networks:
+      - atenea-network
+      - atenea_services_net
+    env_file:
+      - ../../.env.prod
+
+  atenea-queue-ner-store:
+    image: ghcr.io/srfonso/atenea-api:${ATENEA_VERSION:?Set ATENEA_VERSION}
+    container_name: prod-ner-store-queue-atenea
+    command: ["bash", "-c", "celery -A atenea_api worker -Q ner-store-q -n AT8@%h -l INFO --concurrency=${QUEUE_NER_STORE_CONCURRENCY:-1} --prefetch-multiplier=1"]
+    depends_on:
+      atenea-redis:
+        condition: service_started
+      atenea-backend:
+        condition: service_healthy
     networks:
       - atenea-network
       - atenea_services_net
@@ -113,12 +236,29 @@ services:
       - ../../.env.prod
 
   atenea-queue-embed:
-    image: gicp/atenea-server:${ATENEA_VERSION:-v18.07.26}
+    image: ghcr.io/srfonso/atenea-api:${ATENEA_VERSION:?Set ATENEA_VERSION}
     container_name: prod-embed-queue-atenea
-    command: ["bash", "-c", "celery -A atenea_api worker -Q embed-q -n AT4@%h -l INFO --concurrency=1"]
+    command: ["bash", "-c", "celery -A atenea_api worker -Q embed-q -n AT9@%h -l INFO --concurrency=${QUEUE_EMBED_CONCURRENCY:-1} --prefetch-multiplier=1"]
     depends_on:
-      - atenea-redis
-      - atenea-backend
+      atenea-redis:
+        condition: service_started
+      atenea-backend:
+        condition: service_healthy
+    networks:
+      - atenea-network
+      - atenea_services_net
+    env_file:
+      - ../../.env.prod
+
+  atenea-queue-sentiment:
+    image: ghcr.io/srfonso/atenea-api:${ATENEA_VERSION:?Set ATENEA_VERSION}
+    container_name: prod-sentiment-queue-atenea
+    command: ["bash", "-c", "celery -A atenea_api worker -Q sentiment-q -n AT10@%h -l INFO --concurrency=${QUEUE_SENTIMENT_CONCURRENCY:-1} --prefetch-multiplier=1"]
+    depends_on:
+      atenea-redis:
+        condition: service_started
+      atenea-backend:
+        condition: service_healthy
     networks:
       - atenea-network
       - atenea_services_net
@@ -126,12 +266,14 @@ services:
       - ../../.env.prod
 
   atenea-beat:
-    image: gicp/atenea-server:${ATENEA_VERSION:-v18.07.26}
+    image: ghcr.io/srfonso/atenea-api:${ATENEA_VERSION:?Set ATENEA_VERSION}
     container_name: prod-beat
     command: ["bash", "-c", "celery -A atenea_api beat -l INFO"]
     depends_on:
-      - atenea-redis
-      - atenea-backend
+      atenea-redis:
+        condition: service_started
+      atenea-backend:
+        condition: service_healthy
     networks:
       - atenea-network
     env_file:

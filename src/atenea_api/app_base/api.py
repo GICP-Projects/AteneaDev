@@ -19,6 +19,20 @@ logger = logging.getLogger(__name__)
 # ========                Query filters                  ========
 # ===============================================================
 
+def array_tag_filter_kwargs(field_name, tags=None, tag_match="any"):
+    """Return exact ArrayField lookups for a tag filter.
+
+    ``any`` uses PostgreSQL array overlap; ``all`` uses array containment.
+    ``field_name`` may be a related lookup path such as ``room__tags``.
+    """
+    if not tags:
+        return {}
+    if tag_match not in {"any", "all"}:
+        raise ValueError("tag_match must be 'any' or 'all'")
+    lookup = "overlap" if tag_match == "any" else "contains"
+    return {f"{field_name}__{lookup}": tags}
+
+
 def create_advance_filter(and_filter_fields={}, list_filter_fields={}):
     """Create an advanced filter for complex query building in Django.
     

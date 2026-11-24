@@ -1,4 +1,5 @@
 from unittest.mock import Mock, patch
+from uuid import uuid4
 
 import pytest
 
@@ -8,7 +9,6 @@ from app_telegram.services.pipelines import (
     scan_comments_pipeline,
     scan_pipeline,
 )
-from app_telegram.services.telegram import scan_rooms
 
 
 @pytest.mark.django_db
@@ -49,11 +49,13 @@ def test_scan_pipeline_selects_only_scannable_rooms(
         following=False,
     )
 
+    root = Mock(id=uuid4(), total_items=1)
+    child = Mock(id=uuid4())
     with patch(
-        "app_telegram.services.pipelines.run_generic_pipeline",
-        return_value=1,
-    ) as run_pipeline:
-        count = scan_pipeline(
+        "app_telegram.services.pipelines.create_scan_jobs_from_queryset",
+        return_value=(root, child, True),
+    ) as create_jobs:
+        result = scan_pipeline(
             tags=["paper"],
             lang=["en"],
             max_msgs=321,
@@ -61,21 +63,24 @@ def test_scan_pipeline_selects_only_scannable_rooms(
             token=query.pk,
         )
 
-    assert count == 1
-    kwargs = run_pipeline.call_args.kwargs
-    assert list(kwargs["queryset"].values_list("pk", flat=True)) == [eligible.pk]
-    assert kwargs["main_task_func"] is scan_rooms
-    assert kwargs["extra_args"] == {
-        "token": query.pk,
-        "max_msgs": 321,
-        "update_existing_users": True,
+    assert result == {
+        "items_count": 1,
+        "job_id": str(root.id),
+        "message_job_id": str(child.id),
     }
-    signatures = kwargs["tasks_signatures_to_chain"]
-    assert [signature.task for signature in signatures] == [
-        "app_telegram.services.telegram.postprocess_msgs",
-        "app_entity.services.ner.ner_db_store",
-    ]
-    assert kwargs["callback_task_func"].name == "app_telegram.services.telegram.items_to_index"
+    kwargs = create_jobs.call_args.kwargs
+    assert list(kwargs["queryset"].values_list("pk", flat=True)) == [eligible.pk]
+    assert kwargs["filters"] == {
+        "room": [],
+        "tags": ["paper"],
+        "tag_match": "any",
+        "lang": ["en"],
+        "is_channel": None,
+        "lastup_min": None,
+        "lastup_max": None,
+    }
+    assert kwargs["options"] == {"max_msgs": 321, "update_existing_users": True, "check_room": False}
+    assert kwargs["request_token"] == query.pk
 
 
 @pytest.mark.django_db
@@ -94,23 +99,29 @@ def test_scan_comments_pipeline_builds_message_filters(
         is_channel=True,
     )
 
+    root = Mock(id=uuid4(), total_items=0, filters={"selected_items_count": 1})
+    child = Mock(id=uuid4())
     with patch(
-        "app_telegram.services.pipelines.run_generic_pipeline",
-        return_value=1,
-    ) as run_pipeline:
-        count = scan_comments_pipeline(
+        "app_telegram.services.pipelines.create_scan_comments_jobs",
+        return_value=(root, child, True),
+    ) as create_jobs:
+        result = scan_comments_pipeline(
             room=["comments_channel"],
             langs=["es"],
             types=[MessageItem.TEXT],
             max_msgs=50,
-            total_msgs=10000,
             token=query.pk,
         )
 
-    assert count == 1
-    kwargs = run_pipeline.call_args.kwargs
-    assert list(kwargs["queryset"].values_list("pk", flat=True)) == [channel.pk]
-    assert kwargs["extra_args"]["message_filters"] == {
+    assert result == {
+        "items_count": 1,
+        "rooms_count": 1,
+        "job_id": str(root.id),
+        "message_job_id": str(child.id),
+    }
+    kwargs = create_jobs.call_args.kwargs
+    assert kwargs["room_ids"] == [str(channel.pk)]
+    assert kwargs["options"]["message_filters"] == {
         "and_filter_fields": {
             "lang__in": ["es"],
             "media_type__in": [MessageItem.TEXT],
@@ -121,9 +132,9 @@ def test_scan_comments_pipeline_builds_message_filters(
             "is_reply": False,
         }
     }
-    assert kwargs["extra_args"]["max_msgs"] == 50
-    assert kwargs["extra_args"]["total_msgs"] == 10000
-
+    assert kwargs["options"]["max_msgs"] == 50
+    assert "total_msgs" not in kwargs["options"]
+    assert kwargs["request_token"] == query.pk
 
 @pytest.mark.django_db
 def test_group_load_balancer_assigns_rooms_to_their_access_credentials(
@@ -190,4 +201,3 @@ def test_group_load_balancer_does_not_schedule_invalid_credentials(
     assert tasks == []
     assert assigned == []
     task.s.assert_not_called()
-

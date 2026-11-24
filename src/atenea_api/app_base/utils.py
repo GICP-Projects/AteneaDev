@@ -386,6 +386,7 @@ async def call_service(
     max_by_request: int = None,
     max_parallel_requests: int = None,
     batch_size: int = 100,
+    timeout_seconds: int | None = None,
 ) -> list[dict]:
     """ Base function for making batched requests to external services with async 
     parallelization.
@@ -521,7 +522,9 @@ async def call_service(
     )
 
     # Execute batched requests
-    tout = aiohttp.ClientTimeout(total=settings.MAX_TIMEOUT_SERVICES)
+    tout = aiohttp.ClientTimeout(
+        total=timeout_seconds if timeout_seconds is not None else settings.MAX_TIMEOUT_SERVICES
+    )
     responses = []
     
     for idx in range(0, len(payloads_pool), batch_size):

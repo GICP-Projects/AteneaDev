@@ -2,12 +2,9 @@
 This module contains configuration settings and constants for the NER api service. 
 """
 import os
-from pathlib import Path
-import tomllib
 
 
-with (Path(__file__).resolve().parent / "pyproject.toml").open("rb") as pyproject_file:
-    PROJECT_VERSION = tomllib.load(pyproject_file)["project"]["version"]
+PROJECT_VERSION = (os.getenv("ATENEA_VERSION") or "dev").removeprefix("v")
 
 
 # All spaCy models available for each allowed language (lang code must use ISO-639-1).

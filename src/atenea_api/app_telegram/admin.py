@@ -99,13 +99,13 @@ class BaseTelegramAdmin(admin.ModelAdmin):
     SeedItem is going to update its "is_seeeded" field to False
     """
     def delete_queryset(self, request, queryset):
-        seed_items_pks = queryset.values_list("seed_item__pk", flat=True)
+        seed_items_pks = queryset.exclude(seed_item_id__isnull=True).values_list("seed_item_id", flat=True)
         SeedItem.objects.filter(pk__in=seed_items_pks).update(is_seeded=False)
         queryset.delete()
 
     def delete_model(self, request, obj):
-        obj.seed_item.is_seeded = False
-        obj.seed_item.save()
+        if obj.seed_item_id is not None:
+            SeedItem.objects.filter(pk=obj.seed_item_id).update(is_seeded=False)
         obj.delete()
 
     class Meta:
@@ -116,7 +116,7 @@ class BaseTelegramAdmin(admin.ModelAdmin):
 # ======================================================
 class RoomItemAdmin(BaseTelegramAdmin):
     list_display = ["id", "link", "is_channel", "lang", "created_at", "last_update"]
-    readonly_fields= ["tg_id", "link", "unique_name"]
+    readonly_fields= ["tg_id", "link", "unique_name", "username_history", "username_checked_at", "metadata_sync_pending_at", "metadata_sync_pending_fields"]
 
 admin.site.register(RoomItem, RoomItemAdmin)
 
@@ -138,7 +138,10 @@ admin.site.register(UserItem, UserItemAdmin)
 # ======================================================
 class MessageItemAdmin(admin.ModelAdmin):
     list_display = ["id", "room", "msg_id", "get_text_length", "media_type", "lang"]
-    readonly_fields= ["room", "msg_id", "sender", "media_type"]
+    readonly_fields = [
+        "room", "msg_id", "sender", "media_type",
+        "text", "annotated_text", "lang", "ner_input_hash",
+    ]
 
     def get_text_length(self, obj):
         # Calculate the length of the "text" field

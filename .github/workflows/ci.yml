@@ -1,0 +1,109 @@
+name: Pull request checks
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PR commits
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Validate Conventional Commit subjects
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit_re='^(feat|fix|perf|build|chore|ci|docs|style|refactor|test)(\([^)]+\))?!?: .+'
+          mapfile -t subjects < <(git log --no-merges --format=%s "$BASE_SHA..$HEAD_SHA")
+          if ((${#subjects[@]} == 0)); then
+            echo "No non-merge commits found in the PR."
+            exit 0
+          fi
+          for subject in "${subjects[@]}"; do
+            if [[ ! "$subject" =~ $commit_re ]]; then
+              echo "Invalid commit subject: $subject"
+              echo "Use a Conventional Commit subject such as 'feat: add filter' or 'fix(api): handle empty result'."
+              exit 1
+            fi
+          done
+
+  test-api:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/atenea_api
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.11.26"
+          python-version: "3.11"
+          enable-cache: true
+          cache-dependency-glob: |
+            src/atenea_api/pyproject.toml
+            src/atenea_api/uv.lock
+
+      - name: Install API dependencies
+        run: uv sync --locked --group dev
+
+      - name: Install gettext
+        run: sudo apt-get update && sudo apt-get install --yes gettext
+
+      - name: Compile translation catalogs
+        run: uv run python manage.py compilemessages --locale=es
+        env:
+          DJANGO_SETTINGS_MODULE: atenea_api.settings.test
+
+      - name: Start isolated PostgreSQL
+        run: docker compose -f docker-compose.test.yml up -d --wait postgres-test
+
+      - name: Run API tests
+        run: uv run pytest
+
+      - name: Stop isolated PostgreSQL
+        if: always()
+        run: docker compose -f docker-compose.test.yml down
+
+  test-microservices:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [api_ner, api_sentiment]
+    defaults:
+      run:
+        working-directory: src/atenea_services
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.11.26"
+          python-version: "3.11"
+          enable-cache: true
+          cache-suffix: ${{ matrix.project }}
+          cache-dependency-glob: |
+            src/atenea_services/${{ matrix.project }}/pyproject.toml
+            src/atenea_services/${{ matrix.project }}/uv.lock
+
+      - name: Install ${{ matrix.project }} dependencies
+        run: uv sync --locked --group dev --project ${{ matrix.project }}
+
+      - name: Run ${{ matrix.project }} tests
+        run: uv run --directory ${{ matrix.project }} pytest

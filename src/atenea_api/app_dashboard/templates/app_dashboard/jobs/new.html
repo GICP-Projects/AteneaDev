@@ -1,0 +1,28 @@
+{% extends "app_dashboard/base.html" %}
+{% load static i18n %}
+{% block title %}{% translate "New Job" %}{% endblock %}
+{% block content %}
+<div class="page-heading">
+    <div>
+        <p class="eyebrow">{% translate "New operation" %}</p>
+        <h1>{% translate "Create Job" %}</h1>
+        <p class="muted">{% translate "Choose a registered operation and complete its criteria." %}</p>
+    </div>
+</div>
+<form method="post" class="panel stack-form dashboard-form" data-pipeline-form>
+    {% csrf_token %}
+    {% if form.non_field_errors %}<div class="form-errors">{{ form.non_field_errors }}</div>{% endif %}
+    <div class="form-grid form-grid-compact-one">
+        {% include "app_dashboard/components/field.html" with field=form.pipeline %}
+    </div>
+    <div class="form-section">
+        <h2 class="section-title">{% translate "Criteria" %}</h2>
+        <p class="help-text">{% translate "Advanced values are optional and separated from the main operation." %}</p>
+        {% include "app_dashboard/components/parameter_fields.html" with form=form %}
+    </div>
+    <div class="form-actions">
+        <a class="button button-quiet" href="{% url 'app_dashboard:jobs' %}">{% translate "Cancel" %}</a>
+        <button class="button button-primary" type="submit">{% translate "Create Job" %}</button>
+    </div>
+</form>
+{% endblock %}

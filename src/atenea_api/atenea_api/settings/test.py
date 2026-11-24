@@ -36,6 +36,15 @@ from .development import *  # noqa: E402,F403
 
 
 DATABASES["default"]["TEST"] = {"NAME": "test_atenea"}
+CLICKHOUSE = {
+    "host": os.getenv("TEST_CLICKHOUSE_HOST", "127.0.0.1"),
+    "port": int(os.getenv("TEST_CLICKHOUSE_PORT", "28124")),
+    "database": "atenea_test",
+    "username": "atenea_test",
+    "password": "atenea-test-only",
+    "secure": False, "verify": True,
+    "connect_timeout": 5, "send_receive_timeout": 30,
+}
 
 # Tests exercise orchestration but replace external work with mocks.
 CELERY_TASK_ALWAYS_EAGER = True
@@ -43,7 +52,12 @@ CELERY_TASK_EAGER_PROPAGATES = True
 CELERY_BROKER_URL = "memory://"
 CELERY_RESULT_BACKEND = "cache+memory://"
 ELASTICSEARCH_DSL_AUTOSYNC = False
+ELASTICSEARCH_DSL_SIGNAL_PROCESSOR = "django_elasticsearch_dsl.signals.BaseSignalProcessor"
 ELASTICSEARCH_DSL_PARALLEL = False
+ELASTICSEARCH_INDEX_NAMES = {
+    "app_telegram.documents.RoomDocument": "test_room",
+    "app_telegram.documents.MessageDocument": "test_msg",
+}
 
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"

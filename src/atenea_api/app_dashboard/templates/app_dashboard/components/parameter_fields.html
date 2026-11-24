@@ -1,0 +1,33 @@
+{% load i18n %}
+{% if form.dashboard_parameter_groups %}
+<div class="filter-groups">
+    {% for group in form.dashboard_parameter_groups %}
+    <section class="filter-group" aria-labelledby="filter-group-{{ forloop.counter }}">
+        <h3 id="filter-group-{{ forloop.counter }}" class="filter-group-title">{{ group.label }}</h3>
+        <div class="form-grid parameter-grid">
+            {% for field in group.fields %}
+                {% include "app_dashboard/components/field.html" with field=field %}
+            {% endfor %}
+        </div>
+    </section>
+    {% endfor %}
+{% elif form.dashboard_basic_parameter_bound_fields %}
+<div class="form-grid parameter-grid">
+    {% for field in form.dashboard_basic_parameter_bound_fields %}
+        {% include "app_dashboard/components/field.html" with field=field %}
+    {% endfor %}
+</div>
+{% endif %}
+{% if not only_basic and form.dashboard_advanced_parameter_bound_fields %}
+<details class="advanced-options"{% if form.errors %} open{% endif %}>
+    <summary>
+        <span>{% translate "Advanced options" %}</span>
+        <span class="details-hint">{% translate "Optional" %}</span>
+    </summary>
+    <div class="form-grid parameter-grid">
+        {% for field in form.dashboard_advanced_parameter_bound_fields %}
+            {% include "app_dashboard/components/field.html" with field=field %}
+        {% endfor %}
+    </div>
+</details>
+{% endif %}

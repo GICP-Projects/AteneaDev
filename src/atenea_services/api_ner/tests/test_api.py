@@ -22,6 +22,25 @@ def test_check_reports_model_state(client, auth_headers, monkeypatch):
     assert client.get("/check", headers=auth_headers).json() == {"return": True}
 
 
+def test_metadata_is_protected_and_describes_configured_models(client, auth_headers, monkeypatch):
+    assert client.get("/metadata").status_code == 403
+
+    class LoadedModel:
+        class nlp:
+            meta = {"name": "real_es_model", "version": "3.8.0"}
+
+    monkeypatch.setattr(api, "NER_API", {"es": LoadedModel()})
+    response = client.get("/metadata", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["service_version"] == api.PROJECT_VERSION
+    assert body["spacy_version"] == api.spacy.__version__
+    assert body["models"]["es"]["name"] == "real_es_model"
+    assert body["models"]["en"]["name"] == "en_core_web_lg"
+    assert body["schema_version"] == "ner-output-v1"
+
+
 def test_load_waits_for_model_initialization(client, auth_headers, monkeypatch):
     load_model = AsyncMock()
     monkeypatch.setattr(api, "_load_model", load_model)

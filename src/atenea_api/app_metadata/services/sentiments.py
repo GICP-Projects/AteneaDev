@@ -279,12 +279,10 @@ def classify_sentiment(
     # Extract model class from app_label + model_class name
     ModelClass = apps.get_model(model_class_app_label, model_class_name)
 
-    # Start a transaction to avoid race conditions:
-    # f.e: run this task more than once at the same with same items (wasting time 
-    # and RAM usage).
+    # Lock only while reading the source.  The durable ProcessingBatch owns the
+    # long-running operation; keeping row locks across an HTTP call would turn a
+    # slow sentiment service into unnecessary PostgreSQL contention.
     with transaction.atomic():
-
-        # Extract texts (list.. to force the queryset evaluation)
         data = list(
             ModelClass.objects.filter(pk__in=items_pks)
             .select_for_update(skip_locked=True)
@@ -297,59 +295,72 @@ def classify_sentiment(
             )
         )
 
-        # Clean each text and filter items
-        if clean_text:
-            data = [
-                {
-                    **item, 
-                    "text_to_sentiment": extract_tags(
-                        item["text_to_sentiment"],
-                        hashtag=False,
-                        date=False,
-                        time=False,
-                        number=False,
-                        emoji=False
-                    )[0]
-                } 
-                for item in data
-            ]
+    if clean_text:
+        data = [
+            {
+                **item,
+                "text_to_sentiment": extract_tags(
+                    item["text_to_sentiment"] or "",
+                    hashtag=False,
+                    date=False,
+                    time=False,
+                    number=False,
+                    emoji=False,
+                )[0],
+            }
+            for item in data
+        ]
+    if not data:
+        return {
+            "succeeded_ids": [],
+            "failed_ids": [],
+            "skipped_ids": [str(item_id) for item_id in items_pks],
+            "version": "",
+        }
 
-        # Classify the sentiment of the texts
-        model_name, version, sentiments = asyncio.run(
-            call_sentiment_service(data, chunk_size, thread_count)
-        )
+    model_name, version, sentiments = asyncio.run(
+        call_sentiment_service(data, chunk_size, thread_count)
+    )
 
-        # Related sentiment data to the items (in order to update them)
-        items_to_update = []
-        sentiment_model = f"{model_name}_{version}"
-        for item, sentiment in zip(data, sentiments):
-            # If sentiment is None an error ocurred in the request (then, 
-            # this item will be ignored)
-            if sentiment is not None:
-                items_to_update.append(
-                    ModelClass(
-                        **{
-                            "pk": item["pk"],
-                            model_class_sentiment_field_name: sentiment,
-                            model_class_sentiment_model_field_name: sentiment_model
-                        }
-                    )
-                )
+    items_to_update = []
+    succeeded_ids = []
+    failed_ids = []
+    sentiment_model = f"{model_name}_{version}"
+    for index, item in enumerate(data):
+        sentiment = sentiments[index] if index < len(sentiments) else None
+        if sentiment is None:
+            failed_ids.append(str(item["pk"]))
+            continue
+        values = {
+            "pk": item["pk"],
+            model_class_sentiment_field_name: sentiment,
+        }
+        if model_class_sentiment_model_field_name:
+            values[model_class_sentiment_model_field_name] = sentiment_model
+        items_to_update.append(ModelClass(**values))
+        succeeded_ids.append(str(item["pk"]))
 
-        # Update the items by adding the relationships
+    with transaction.atomic():
         ini_time = time.time()
         num_updates = ModelClass.objects.bulk_update(
-            items_to_update, 
+            items_to_update,
             [model_class_sentiment_field_name] + (
-                [model_class_sentiment_model_field_name] 
-                if model_class_sentiment_model_field_name 
+                [model_class_sentiment_model_field_name]
+                if model_class_sentiment_model_field_name
                 else []
             ),
-            batch_size=settings.BULK_BATCH_SIZE
-        )
+            batch_size=settings.BULK_BATCH_SIZE,
+        ) if items_to_update else 0
         updt_time = time.time() - ini_time
 
-        logger.info(
-            f"{num_updates} {ModelClass.__name__} items sentiment has been classified "
-            f"(bulk_update: {updt_time:.3f} secs)."
-        )
+    logger.info(
+        f"{num_updates} {ModelClass.__name__} items sentiment has been classified "
+        f"(bulk_update: {updt_time:.3f} secs)."
+    )
+    processed_ids = {str(item["pk"]) for item in data}
+    return {
+        "succeeded_ids": succeeded_ids,
+        "failed_ids": failed_ids,
+        "skipped_ids": [str(item_id) for item_id in items_pks if str(item_id) not in processed_ids],
+        "version": sentiment_model,
+    }

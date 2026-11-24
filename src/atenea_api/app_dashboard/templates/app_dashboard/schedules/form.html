@@ -1,0 +1,159 @@
+{% extends "app_dashboard/base.html" %}
+{% load static i18n %}
+{% block title %}{% if editing %}{% translate "Edit schedule" %}{% else %}{% translate "New schedule" %}{% endif %}{% endblock %}
+{% block content %}
+<div class="page-heading">
+    <div>
+        <p class="eyebrow">{% translate "Automation" %}</p>
+        <h1>{% if editing %}{% translate "Edit schedule" %}{% else %}{% translate "New schedule" %}{% endif %}</h1>
+        <p class="muted">{% translate "Choose what runs, when it runs and how the scheduler should handle an unfinished run." %}</p>
+    </div>
+</div>
+
+<form method="post" class="panel stack-form dashboard-form schedule-form" data-schedule-form>
+    {% csrf_token %}
+    {% if form.non_field_errors %}<div class="form-errors">{{ form.non_field_errors }}</div>{% endif %}
+
+    <section class="form-section form-section-card" aria-labelledby="schedule-basics-title">
+        <div class="form-section-heading">
+            <div>
+                <p class="eyebrow">{% translate "Definition" %}</p>
+                <h2 id="schedule-basics-title" class="section-title">{% translate "Schedule details" %}</h2>
+            </div>
+            <span class="section-number">01</span>
+        </div>
+        <div class="form-grid schedule-primary-grid">
+            {% include "app_dashboard/components/field.html" with field=form.name %}
+            {% include "app_dashboard/components/field.html" with field=form.pipeline %}
+            <div class="schedule-description-field">{% include "app_dashboard/components/field.html" with field=form.description %}</div>
+            <div class="schedule-enabled-field">{% include "app_dashboard/components/field.html" with field=form.enabled %}</div>
+        </div>
+    </section>
+
+    <section class="form-section form-section-card" aria-labelledby="schedule-timing-title">
+        <div class="form-section-heading">
+            <div>
+                <p class="eyebrow">{% translate "Trigger" %}</p>
+                <h2 id="schedule-timing-title" class="section-title">{% translate "When it runs" %}</h2>
+            </div>
+            <span class="section-number">02</span>
+        </div>
+        <div class="form-grid form-grid-compact-one">
+            {% include "app_dashboard/components/field.html" with field=form.schedule_kind %}
+        </div>
+        <div data-schedule-section="repeat" class="schedule-section schedule-subsection">
+            <div class="form-grid">{% include "app_dashboard/components/field.html" with field=form.repeat_every %}{% include "app_dashboard/components/field.html" with field=form.repeat_period %}</div>
+        </div>
+        <div data-schedule-section="calendar" class="schedule-section schedule-subsection">
+            <details class="advanced-options calendar-options" data-calendar-options{% if form.errors %} open{% endif %}>
+                <summary>
+                    <span>{% translate "Calendar options" %}</span>
+                    <span class="details-hint">{% translate "Optional fields use *" %}</span>
+                </summary>
+                <div class="advanced-options-body">
+                    <div class="form-grid form-grid-five">
+                        {% include "app_dashboard/components/field.html" with field=form.calendar_minute %}
+                        {% include "app_dashboard/components/field.html" with field=form.calendar_hour %}
+                        {% include "app_dashboard/components/field.html" with field=form.calendar_day_of_week %}
+                        {% include "app_dashboard/components/field.html" with field=form.calendar_day_of_month %}
+                        {% include "app_dashboard/components/field.html" with field=form.calendar_month_of_year %}
+                    </div>
+                    <div class="form-grid form-grid-compact-one">
+                        {% include "app_dashboard/components/field.html" with field=form.calendar_timezone %}
+                    </div>
+                </div>
+            </details>
+        </div>
+        <div data-schedule-section="once" class="schedule-section schedule-subsection">
+            <div class="form-grid form-grid-compact-one">
+                {% include "app_dashboard/components/field.html" with field=form.once_time %}
+            </div>
+        </div>
+    </section>
+
+    <section class="form-section form-section-card" aria-labelledby="schedule-criteria-title">
+        <div class="form-section-heading">
+            <div>
+                <p class="eyebrow">{% translate "Scope" %}</p>
+                <h2 id="schedule-criteria-title" class="section-title">{% translate "Operation criteria" %}</h2>
+            </div>
+            <span class="section-number">03</span>
+        </div>
+        {% include "app_dashboard/components/parameter_fields.html" with form=form only_basic=True %}
+    </section>
+
+    <details class="advanced-options schedule-advanced-options" data-schedule-advanced{% if form.errors %} open{% endif %}>
+        <summary>
+            <span>
+                <strong>{% translate "Advanced options" %}</strong>
+                <small>{% translate "Availability, retry behaviour and less common operation parameters" %}</small>
+            </span>
+            <span class="details-hint">{% translate "Optional" %}</span>
+        </summary>
+        <div class="advanced-options-body schedule-advanced-body">
+            <input type="hidden" name="advanced_options_touched" value="{% if form.errors %}1{% else %}0{% endif %}" data-advanced-options-touched>
+            <section class="advanced-subsection" aria-labelledby="schedule-availability-title">
+                <div class="advanced-subsection-heading">
+                    <h3 id="schedule-availability-title">{% translate "Availability window" %}</h3>
+                    <p>{% translate "Limit when this schedule is allowed to create Jobs." %}</p>
+                </div>
+                <div class="form-grid advanced-fields-grid availability-grid">
+                    {% include "app_dashboard/components/field.html" with field=form.start_time %}
+                    {% include "app_dashboard/components/field.html" with field=form.expires %}
+                    {% include "app_dashboard/components/field.html" with field=form.expire_seconds field_class="form-field--compact-number" %}
+                </div>
+            </section>
+
+            <section class="advanced-subsection schedule-policy-section" data-schedule-policy-options aria-labelledby="schedule-retry-title">
+                <div class="advanced-subsection-heading">
+                    <h3 id="schedule-retry-title">{% translate "Failure handling" %}</h3>
+                    <p>{% translate "Keep scheduled runs from blocking the next interval after their retries are exhausted." %}</p>
+                </div>
+                <div class="form-grid advanced-fields-grid schedule-policy-grid">
+                    <input type="hidden" name="auto_finalize_failed" value="false">
+                    {% include "app_dashboard/components/field.html" with field=form.auto_finalize_failed %}
+                    {% include "app_dashboard/components/field.html" with field=form.retry_grace_seconds field_class="form-field--compact-number" %}
+                </div>
+            </section>
+
+            <section class="advanced-subsection danger-zone" aria-labelledby="schedule-danger-title">
+                <div class="danger-zone-layout">
+                    <div class="danger-zone-copy">
+                        <div class="danger-zone-heading">
+                            <span class="danger-mark" aria-hidden="true">!</span>
+                            <div>
+                                <p class="danger-kicker">{% translate "Danger zone" %}</p>
+                                <h3 id="schedule-danger-title">{% translate "Replace an equivalent running Job" %}</h3>
+                            </div>
+                        </div>
+                        <p>{% translate "This cancels an equivalent running Job when the next schedule tick arrives. If the interval is too short, successive runs can cancel one another forever." %}</p>
+                    </div>
+                    <div class="danger-zone-control">
+                        <input type="hidden" name="replace_running_job" value="false">
+                        {% include "app_dashboard/components/field.html" with field=form.replace_running_job field_class="danger-toggle-field" %}
+                    </div>
+                </div>
+            </section>
+
+            {% if form.dashboard_advanced_parameter_bound_fields %}
+            <section class="advanced-subsection" aria-labelledby="schedule-operation-advanced-title">
+                <div class="advanced-subsection-heading">
+                    <h3 id="schedule-operation-advanced-title">{% translate "Advanced operation parameters" %}</h3>
+                    <p>{% translate "These values are passed to the selected pipeline as-is after validation." %}</p>
+                </div>
+                <div class="form-grid advanced-fields-grid parameter-grid">
+                    {% for field in form.dashboard_advanced_parameter_bound_fields %}
+                        {% include "app_dashboard/components/field.html" with field=field %}
+                    {% endfor %}
+                </div>
+            </section>
+            {% endif %}
+        </div>
+    </details>
+
+    <div class="form-actions">
+        <a class="button button-quiet" href="{% url 'app_dashboard:schedules' %}">{% translate "Cancel" %}</a>
+        <button class="button button-primary" type="submit">{% translate "Save schedule" %}</button>
+    </div>
+</form>
+{% endblock %}

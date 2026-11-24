@@ -3,7 +3,7 @@
 This guide describes how to configure and start a new Atenea production
 environment with Docker Compose.
 
-The stack includes Django, PostgreSQL, Redis, MinIO, PgAdmin, Celery workers and
+The stack includes Django, PostgreSQL, Redis, ClickHouse, MinIO, PgAdmin, Celery workers and
 Celery Beat. Elasticsearch and the ML services are deployed separately.
 
 ## Prerequisites
@@ -14,8 +14,8 @@ Celery Beat. Elasticsearch and the ML services are deployed separately.
   [microservices guide](../../atenea_services/README.md).
 - DNS, firewall and reverse-proxy rules for the public services.
 
-Configure the production hosts and CORS origins in
-`atenea_api/settings/production.py` before building the backend image.
+Configure the production hosts and CORS origins with `DJANGO_EXTRA_ALLOWED_HOSTS`
+and `DJANGO_EXTRA_CORS_ORIGINS` in `.env.prod` (see below).
 
 ## Environment configuration
 
@@ -25,12 +25,14 @@ quote its values. See `.env.example` for the complete variable reference.
 At minimum, configure:
 
 ```env
-ATENEA_VERSION=v18.07.26
+ATENEA_VERSION=v0.8.0
 
 DJANGO_SETTINGS_MODULE=atenea_api.settings.production
 DJANGO_LOG_LEVEL=INFO
 DJANGO_SECRET_KEY=<strong-random-secret>
 DJANGO_SERVER_TIMEZONE=Europe/Madrid
+DJANGO_EXTRA_ALLOWED_HOSTS=<public-host-or-ip>
+DJANGO_EXTRA_CORS_ORIGINS=<https://front-end-origin>
 JWT_SIGNATURE_SECRET=<different-strong-random-secret>
 ACCESS_TOKEN_EXPIRE_SECONDS=86400
 REFRESH_TOKEN_EXPIRE_SECONDS=99999999
@@ -53,10 +55,27 @@ ELASTICSEARCH_APIKEY_ID=<api-key-id>
 ELASTICSEARCH_APIKEY_API_KEY=<api-key-secret>
 DEPLOYMENT_UNIQUE_SUFFIX=<unique-stable-suffix>
 
+CLICKHOUSE_HOST=atenea-clickhouse
+CLICKHOUSE_PORT=8123
+CLICKHOUSE_DATABASE=atenea_prod
+CLICKHOUSE_USER=atenea
+CLICKHOUSE_PASSWORD=<strong-random-password>
+
 NER_SERVICE_HOST=atenea-services
 NER_SERVICE_PORT=80
 NER_SERVICE_API_KEY=<same-key-configured-in-api-ner>
-NER_SERVICE_MAX_DATA_BY_REQUEST=5000
+NER_SERVICE_MAX_DATA_BY_REQUEST=2000
+NER_BATCH_SIZE=10000
+NER_EXTRACT_MAX_INFLIGHT=2
+NER_BACKFILL_MAX_INFLIGHT=1
+NER_HTTP_MAX_CONCURRENCY=2
+NER_HTTP_TIMEOUT_SECONDS=300
+NER_EXTRACT_SOFT_TIME_LIMIT=900
+NER_EXTRACT_TIME_LIMIT=1020
+PROCESSING_BATCH_LEASE_SECONDS=1200
+PROCESSING_VISIBILITY_TIMEOUT_SECONDS=9000
+NER_STORE_MAX_RETRIES=10
+NER_RECONCILE_INTERVAL_SECONDS=60
 
 SENTIMENT_SERVICE_HOST=atenea-services
 SENTIMENT_SERVICE_PORT=80
@@ -133,16 +152,26 @@ docker compose -f docker-compose.yml \
   --env-file ../../.env.prod -p atenea-prod config --quiet
 ```
 
-Build the versioned backend image:
+The production images are private packages in GitHub Container Registry. On each
+deployment host, set `GHCR_USERNAME` to the GitHub account and
+`GHCR_READ_PACKAGES_TOKEN` to a classic personal access token with `read:packages`,
+then authenticate:
+
+```bash
+printf '%s' "$GHCR_READ_PACKAGES_TOKEN" | docker login ghcr.io \
+  --username "$GHCR_USERNAME" --password-stdin
+```
+
+Set `ATENEA_VERSION` to the same release tag used by the API, NER and sentiment
+services. Pull the selected images before starting the stack:
 
 ```bash
 docker compose -f docker-compose.yml \
-  --env-file ../../.env.prod -p atenea-prod \
-  build --pull atenea-backend
+  --env-file ../../.env.prod -p atenea-prod pull
 ```
 
-This image is shared by Django, Celery workers and Celery Beat. If the selected
-image already exists, skip the build and add `--no-build` to the `up` commands.
+The API image is shared by Django, Celery workers and Celery Beat. GitHub Actions
+builds and publishes it; production hosts only pull it.
 
 Start PostgreSQL and wait until it is ready:
 
@@ -236,3 +265,18 @@ Back up these directories according to the recovery policy of the deployment.
 Running `docker compose down` removes containers and networks but preserves
 this data. Do not use `down -v` unless named volumes are intentionally being
 removed.
+
+## ClickHouse entity analytics
+
+The Compose service `atenea-clickhouse` stores entity ranking facts in
+`_prod_data/clickhouse` and is reachable only on the internal network. Configure
+`CLICKHOUSE_HOST=atenea-clickhouse`, `CLICKHOUSE_PORT=8123`, an isolated database
+and credentials in `.env.prod`. Backend startup applies PostgreSQL migrations
+and calls `init_clickhouse` after ClickHouse is healthy.
+Back up `_prod_data/clickhouse` together with the PostgreSQL source data.
+The bundled server is a single instance with no replication or automatic
+failover. Restore its analytical data from backup or rebuild a fresh database
+through the existing message indexing workflow using PostgreSQL annotations.
+See [message indexing](pipelines/telegram-index-messages.md) for data and retry
+semantics and [environment variables](enviroments.md#clickhouse-connection-and-query-resources)
+for query resource limits.

@@ -1,9 +1,11 @@
+from types import SimpleNamespace
+
 import pytest
 from rest_framework import status
 
 from app_base.models import QueryItem
-from app_telegram.models import SeedItem
-from app_telegram.serializers import SeedItemSerializer
+from app_telegram.models import RoomItem, SeedItem, UserItem
+from app_telegram.serializers import MessageDocumentSerializer, SeedItemSerializer
 from app_telegram.utils import telegram_link_normalizer
 
 
@@ -17,6 +19,7 @@ SEED_BULK_URL = "/api/v1/tg/seed/bulk"
         ("http://t.me/example_channel?ref=test", "https://t.me/example_channel"),
         ("t.me/example_channel/123", "https://t.me/example_channel"),
         ("https://www.t.me/example_channel", "https://t.me/example_channel"),
+        ("https://t.me/Joinchat_News/123", "https://t.me/joinchat_news"),
         (
             "https://t.me/JOINchat/Dm-Vwk9bRZb6m3sqqZlQfg/12",
             "https://t.me/joinchat/Dm-Vwk9bRZb6m3sqqZlQfg",
@@ -25,6 +28,7 @@ SEED_BULK_URL = "/api/v1/tg/seed/bulk"
 )
 def test_telegram_link_normalizer_accepts_supported_variants(link, expected):
     assert telegram_link_normalizer(link, rebuild_link=True) == expected
+    assert telegram_link_normalizer(link) == expected.removeprefix("https://t.me/")
 
 
 @pytest.mark.parametrize(
@@ -38,6 +42,9 @@ def test_telegram_link_normalizer_accepts_supported_variants(link, expected):
         "https://example.org/t.me/channel",
         "https://t.me",
         "ftp://t.me/channel",
+        "https://t.me/canal_ñ",
+        "https://t.me/joinchat",
+        "https://t.me/joinchat/!invalid",
     ],
 )
 def test_telegram_link_normalizer_rejects_non_telegram_urls(link):
@@ -45,7 +52,7 @@ def test_telegram_link_normalizer_rejects_non_telegram_urls(link):
 
 
 @pytest.mark.django_db
-def test_seed_bulk_serializer_normalizes_and_keeps_valid_items():
+def test_entities_and_serializers_share_public_link_normalization():
     serializer = SeedItemSerializer(
         data=[
             {"link": "HTTPS://T.ME/Valid_Channel", "type": "CHANNEL", "lang": "en"},
@@ -59,6 +66,10 @@ def test_seed_bulk_serializer_normalizes_and_keeps_valid_items():
     assert serializer.is_valid(), serializer.errors
     assert serializer.validated_data["items"][0]["link"] == "https://t.me/valid_channel"
     assert "https://example.org/not-telegram" in serializer.validated_data["invalid_items"]
+    assert RoomItem.normalize_username("@Valid_Channel") == "valid_channel"
+    assert UserItem.build_public_link("@Valid_Channel") == "https://t.me/valid_channel"
+    hit = SimpleNamespace(room_name="Valid_Channel", msg_id=123)
+    assert MessageDocumentSerializer().get_link(hit) == "https://t.me/valid_channel/123"
 
 
 @pytest.mark.django_db

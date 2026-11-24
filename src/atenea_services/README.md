@@ -139,7 +139,7 @@ Set in the `COMPOSE_FILE` variable all the microservices you want to deploy by a
 
 ```.env
 COMPOSE_PATH_SEPARATOR=:
-COMPOSE_FILE=docker-compose.yml:api_ner/docker-compose.yml:api_sentiment/docker-compose.yml
+COMPOSE_FILE=docker-compose.yml:api_ner/docker-compose.yml:api_sentiment/docker-compose.yml:docker-compose.dev.yml
 ```
 
 Available microservices:
@@ -148,13 +148,17 @@ Available microservices:
 
 Fill in all the enviroment variables of the microservices to be deployed.
 ```.env
-ATENEA_VERSION=v18.07.26
+ATENEA_VERSION=v0.8.0
 NER_SERVICE_API_KEY="..."
 ...
 ## 
 SENTIMENT_SERVICE_API_KEY="..."
 ...
 ```
+
+`ATENEA_VERSION` is the shared Atenea release tag for the deployed images. The
+NER and sentiment endpoints report this release version; their package versions
+in `pyproject.toml` remain independent.
 
 Generate an API_KEY, for example, by using the UUID Python library:
 ```Python
@@ -169,13 +173,37 @@ headers = {
 }
 ```
 
-### Deployment command.
+### Development deployment
 
 ```bash
-docker compose -p atenea-dev up -d
+docker compose -p atenea-dev up -d --build
 ```
 
-Custom scale for load balancing using `--scale <service-name>` parameter
+The development Compose overlay builds NER and sentiment from the local source.
+Production uses the same three service definitions without that overlay, so it
+pulls the published images from GHCR instead:
+
+```env
+COMPOSE_FILE=docker-compose.yml:api_ner/docker-compose.yml:api_sentiment/docker-compose.yml
+```
+
+On a production host, set `GHCR_USERNAME` to the GitHub account and
+`GHCR_READ_PACKAGES_TOKEN` to a classic personal access token with `read:packages`,
+then pull and start the selected version:
+
+```bash
+printf '%s' "$GHCR_READ_PACKAGES_TOKEN" | docker login ghcr.io \
+  --username "$GHCR_USERNAME" --password-stdin
+docker compose -p atenea-prod pull
+docker compose -p atenea-prod up -d
+```
+
+`ATENEA_VERSION` must match the API release tag (for example, `v0.8.0`).
+GitHub Actions builds the changed service images and assigns the release tag to
+unchanged images.
+
+Custom scale for load balancing using `--scale <service-name>` parameter:
+
 ```bash
 docker compose -p atenea-dev up -d --scale ner-api=2 --scale sentiment-api-gpu1=3 --scale sentiment-api-gpu2=3
 ```

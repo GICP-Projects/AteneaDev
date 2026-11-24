@@ -1,18 +1,23 @@
 import time
 import asyncio
-import random
 import logging
+import uuid
+from contextlib import nullcontext
 from itertools import chain
 from django.apps import apps
 from django.conf import settings
-from django.db import OperationalError
-from celery.app import shared_task
-from celery import group
+from django.db import transaction
 from app_base.utils import call_service
 from app_base.tagger import extract_tags
-from app_base.api import create_advance_filter, bulk_add_query_relationships_with_pks
 from app_entity.models import EntityItem, AnnotatedEntity
+from app_entity.enums import EntityType
 from django.contrib.contenttypes.models import ContentType
+from app_base.signals import suspend_elasticsearch_sync
+
+
+# Increment when custom-entity extraction behavior changes, including rules
+# delegated to app_base.tagger.extract_tags.
+NER_CUSTOM_ENTITIES_VERSION = "v1"
 
 
 # Get an instance of a logger
@@ -23,7 +28,8 @@ async def call_ner_service(
     data, 
     max_by_request = None,
     max_parallel_requests = None,
-    batch_size = 100 # Max number of requests by session
+    batch_size = 100, # Max number of requests by session
+    timeout_seconds = None,
 ):
     """
     Calls the NER service endpoint with the provided data, handling batching and session 
@@ -141,183 +147,34 @@ async def call_ner_service(
         payload_iterate_func=custom_payload_iterate_func,
         max_by_request=max_by_request,
         max_parallel_requests=max_parallel_requests,
-        batch_size=batch_size
+        batch_size=batch_size,
+        timeout_seconds=timeout_seconds,
     )
 
     # Flatten all grouped responses [....] (flatten)
     return chain.from_iterable(responses)
 
 
-# ======================================================
-# =====            ENTITIES CELERY TASKS           =====
-# ======================================================
-# =====  Celery tasks that have specific functio-  =====
-# =====    -nality to extract, process and store   ===== 
-# =====                entities.                   =====
-# ======================================================
+class NerExtractionError(RuntimeError):
+    """The API-NER output cannot safely be persisted as a complete batch."""
 
 
-# ======================================================
-# =====        CELERY TASKS: NER EXTRACTION        =====     
-# ======================================================
+def _ner_item_key(value):
+    """Normalize UUID forms returned by Celery/JSON/API-NER for comparisons."""
 
-@shared_task(track_started=True)
-def run_ner(
-    token, 
-    model_class_name, 
-    model_class_app_label, 
-    model_class_text_field_name,
-    and_filter_fields = {}, 
-    list_filter_fields = {},
-    apply_distinct = False,
-    block_size = 10000
-):
-    """ NER Extraction Orchestrator.
-    Run the Name entity recognition in celery and split the task in N subtasks to
-    split the computational cost and improve performance.
+    try:
+        return uuid.UUID(str(value)).hex
+    except (ValueError, TypeError, AttributeError):
+        return str(value)
 
-    Parameters
-    ----------
-    token: string
-        Query token to add the relation with the item
 
-    model_class_name: str
-        Contains the class name of the Django Model with the embeddings field and
-        whose extracted entities are going to be related. 
-
-    model_class_app_name: str
-        Contains the django app name which contains the model class. 
-
-    model_class_text_field_name: str
-        Contains the field name of the text field in the Django Model which is going to
-        be used to extract entities.
-    
-    and_filter_fields: dict, default={}
-        Dict with the Django ORM filters to extract items. Check the documentation 
-        of app_base.api.create_advance_filter.
-        ```
-        {
-            "<field>__<desired_filter>": value/s,
-            ...
-        }
-        ```
-
-    list_filter_fields: dict, default={}
-        Dict with the Django ORM filters to extract items. Check the documentation 
-        of app_base.api.create_advance_filter.
-        ```
-        {
-            "<field>__<desired_filter>": { "values": [....], "OR": True/False },
-            ...
-        }
-        ```
-
-    apply_distinct: boolean, default=False
-        In case the filters inside `and_filter_fields` or `list_filter_fields` contain 
-        related fields that may cause duplicates. This often happens with "related 
-        fields" with a `Many` relationship. For example, 
-        `MessageItem.objects.filter(entities__entity__name__icontains="Pedro")` 
-        returns duplicates (entities is a Many-to-Many relationship field). On the 
-        other hand, `MessageItem.objects.filter(room__tags__icontains="politic")` 
-        is safe, as it is a One-to-Many relationship accessed through a One relationship 
-        (each message has only one room).
-        NOTE: `.distinct("pk")` may significantly impact performance.
-
-    block_size: int, default=10000
-        Number of items by celery task.
-    """
-
-    tasks = []
-
-    # Extract model class from app_label + model_class name
-    ModelClass = apps.get_model(model_class_app_label, model_class_name)
-
-    items_dicts = (
-        ModelClass.objects.filter(
-            create_advance_filter(
-                and_filter_fields=and_filter_fields,
-                list_filter_fields=list_filter_fields
-            )
-        )
-        .exclude(lang__exact="")
-        .exclude(**{f"{model_class_text_field_name}__isnull": True})
-        .exclude(**{f"{model_class_text_field_name}__exact": ""})
-        # Ordering by an unique value allow the unevaluated Queryset to be sliced 
-        # (without repeating items inconsistently in each slice).
-        # "Slicing an unevaluated QuerySet usually returns another unevaluated QuerySet"
-        .order_by("pk", "lang")
-    )
-
-    if apply_distinct:
-        items_dicts = items_dicts.distinct("pk")
-
-    # Rest of the queryset pipe
-    items_dicts = items_dicts.values("pk", "lang", model_class_text_field_name)
-    
-    total_items = items_dicts.count()
-    items_pks = []
-    logger.debug(f"Total items: {total_items}")
-    start_time = time.time()
-    
-    text_to_annotate = {}
-    items_in_block = 0
-    
-    # We use iterator() to prevent OFFSET/LIMIT database degradation on huge tables
-    for item in items_dicts.iterator(chunk_size=block_size):
-        text_to_annotate.setdefault(item["lang"], []).append(
-            {
-                "pk": item["pk"], 
-                "text": item[model_class_text_field_name]
-            }
-        )
-        items_pks.append(item["pk"])
-        items_in_block += 1
-        
-        # When block is full, build the task and reset chunk containers
-        if items_in_block >= block_size:
-            tasks.append(
-                ner_extraction.si(
-                    text_to_annotate,
-                ) | ner_db_store.s(
-                    model_class_name,
-                    model_class_app_label,
-                )
-            )
-            end_time = time.time()
-            logger.debug(f"items block. Time: {end_time - start_time}secs")
-            start_time = time.time()
-            
-            text_to_annotate = {}
-            items_in_block = 0
-
-    # Don't forget the last subset
-    if text_to_annotate:
-        tasks.append(
-            ner_extraction.si(
-                text_to_annotate,
-            ) | ner_db_store.s(
-                model_class_name,
-                model_class_app_label,
-            )
-        )
-
-    # Clear all items
-    items_dicts = []
-    
-    job = group(tasks)
-    job.apply_async()
-
-    # Bind the Query to all the msg items involved
-    if False:#token:
-        bulk_add_query_relationships_with_pks(items_pks, ContentType.objects.get_for_model(ModelClass), token)
-    
-    
-@shared_task(track_started=True)
-def ner_extraction(
+def extract_ner_data(
     data, 
     batch_size = 100, 
     custom_entities = True,
-    available_lang = None
+    available_lang = None,
+    strict = False,
+    timeout_seconds = None,
 ):
     """ Extract entities from text.
 
@@ -355,13 +212,24 @@ def ner_extraction(
 
     available_lang = available_lang or settings.NER_SERVICE.languages
 
+    # ``extract_tags`` mutates the text value while removing custom entities.
+    # Never mutate the caller input: durable tasks can retry the same payload.
+    data = {
+        lang: [dict(item) for item in items]
+        for lang, items in data.items()
+    }
+
     entities = []
     entity_to_ann = {}
     seen_entities = set()
     # Store all the pk-original_text for any item which contains 
     # (emails, urls, mentions and hashtags or emojis) entities
     pk_to_original = {} 
-    all_pk_from_data = []
+    all_pk_from_data = [
+        item["pk"]
+        for items in data.values()
+        for item in items
+    ]
     
     # First extract custom entities ('EMAIL', 'URL', 'MENTION', 'HASHTAGS' and 'EMOJI')
     if custom_entities:
@@ -375,12 +243,9 @@ def ner_extraction(
                     number=False,
                 )
 
-                # Store all the pks to send them to the following task in the pipeline
-                all_pk_from_data.append(item["pk"])
-
                 # If text have changed to be able later to re-calculate offsets
                 if original_text != item["text"]:
-                    pk_to_original[item["pk"].hex] = original_text
+                    pk_to_original[_ner_item_key(item["pk"])] = original_text
                 for tag_ent_type, tag_entities in ann_entities.items():
                     for entity in tag_entities:
                         unique_ent = EntityItem.to_unique(entity["match"], tag_ent_type)
@@ -412,6 +277,13 @@ def ner_extraction(
     max_retries = 3
     retry_delay = 15  # seconds between retries
     results = []
+    expected_api_ids = {
+        _ner_item_key(item["pk"])
+        for lang, items in data.items()
+        if lang in available_lang
+        for item in items
+        if isinstance(item.get("text"), str) and item["text"].strip()
+    }
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -420,7 +292,11 @@ def ner_extraction(
             results = list(asyncio.run(
                 call_ner_service(
                     data={k:data[k] for k in available_lang if k in data},
-                    batch_size=batch_size
+                    batch_size=batch_size,
+                    # A durable batch owns one global HTTP slot. One request at
+                    # a time inside that slot keeps the configured bound real.
+                    max_parallel_requests=1 if strict else None,
+                    timeout_seconds=timeout_seconds,
                 )
             ))
             break
@@ -435,8 +311,27 @@ def ner_extraction(
                 logger.error(
                     f"NER service unavailable after {max_retries} attempts: "
                     f"{exc.__class__.__name__}: {exc}. "
-                    f"Returning only custom entities extracted so far."
+                    f"{'Failing the durable batch.' if strict else 'Returning only custom entities extracted so far.'}"
                 )
+                if strict:
+                    raise NerExtractionError("NER service unavailable") from exc
+
+    if strict:
+        result_by_id = {}
+        for result in results:
+            if not isinstance(result, dict):
+                raise NerExtractionError("NER service returned an invalid result item")
+            if "id" not in result or not isinstance(result.get("entities"), list):
+                raise NerExtractionError("NER service returned an incomplete result item")
+            result_id = _ner_item_key(result["id"])
+            if result_id in result_by_id:
+                raise NerExtractionError(f"NER service returned duplicate id {result_id}")
+            result_by_id[result_id] = result
+        if set(result_by_id) != expected_api_ids:
+            raise NerExtractionError(
+                "NER service returned a partial response "
+                f"(expected={len(expected_api_ids)}, received={len(result_by_id)})"
+            )
 
     #items_to_update = []
     ner_processed = 0
@@ -453,7 +348,7 @@ def ner_extraction(
         ner_processed += 1
         # Retrieve original text from this Message (None = The text hasn't changed)
         # In case the original text exist, api-ner entities must recalculate their offsets
-        original_text = pk_to_original.get(data["id"], None)
+        original_text = pk_to_original.get(_ner_item_key(data["id"]), None)
         # To handle offset re-calculation when an entity appear multiple times
         last_end_offset = 0 
         for entity in data["entities"]:
@@ -504,24 +399,19 @@ def ner_extraction(
     return entities, entity_to_ann, all_pk_from_data
 
 
-@shared_task(track_started=True,  max_retries=10)
-def ner_db_store(
+def store_ner_results(
     db_data_tuple,
     model_class_name,
-    model_class_app_label, 
+    model_class_app_label,
+    *,
+    replace_message_ids=None,
+    atomic=True,
 ):
     """
     Handles database operations for entities and its relations.
 
-    This function is responsible for inserting or updating and it is designed to 
-    handle OperationalErrors, such as deadlocks or timeouts, by retrying the operation. 
-    The retry mechanism utilizes Celery's built-in capabilities, automatically
-    reattempting the task in case of such errors.
-
-    The function will retry the operation up to a maximum of five times (configurable),
-    with a delay between retries, to manage temporary database issues effectively.
-
-    https://stackoverflow.com/a/67767199
+    Retry ownership belongs to ``app_entity.tasks.store_ner_batch``. Keeping
+    this function undecorated makes it usable inside that stage's transaction.
     
     Parameters
     ----------
@@ -542,7 +432,7 @@ def ner_db_store(
     Returns
     ---------- 
     msgs_dict: dict
-        Returns a dict compatible with `app_telegram.services.telegram.items_to_index`
+        Returns a dict compatible with `app_telegram.services.index.items_to_index`
         to allow the connection of these tasks in a Celery Pipeline.
     """
     # Extract data from previous task
@@ -550,48 +440,144 @@ def ner_db_store(
 
     # Extract model class from app_label + model_class name
     ModelClass = apps.get_model(model_class_app_label, model_class_name)
-    try:
+    context = transaction.atomic() if atomic else nullcontext()
+    with context:
+        replacement_ids = list(replace_message_ids or [])
+        requested_ids = list(chain(
+            all_model_items_pks,
+            replacement_ids,
+            (
+                annotation["item_pk"]
+                for annotations in entity_to_ann.values()
+                for annotation in annotations
+            ),
+        ))
+        existing_ids = set(
+            ModelClass._default_manager
+            .filter(pk__in=requested_ids)
+            .order_by("pk")
+            .values_list("pk", flat=True)
+        )
+        if not existing_ids:
+            return {}
+        # Generic annotations have no database FK to their source. Skip items
+        # deleted since extraction instead of creating orphan annotations.
+        # JSON IDs are strings; database PKs are UUID objects when compared here.
+        entity_to_ann = {
+            unique_ent: [
+                annotation for annotation in annotations
+                if uuid.UUID(str(annotation["item_pk"])) in existing_ids
+            ]
+            for unique_ent, annotations in entity_to_ann.items()
+        }
+        all_model_items_pks = [
+            item_id for item_id in all_model_items_pks
+            if uuid.UUID(str(item_id)) in existing_ids
+        ]
+
         # Create/update entities (Note: already existing entities will not have the correct pk)
         init_time = time.time()
+        normalized_entities = {
+            entity["unique_ent"]: {
+                **entity,
+                "type": EntityType.from_name(entity["type"]),
+            }
+            for entity in entities
+        }
+        sorted_unique_entities = sorted(normalized_entities)
+        logger.info(
+            f"{len(normalized_entities)} unique EntityItem items were normalized "
+            f"(normalize/sort: {(time.time() - init_time):.3f} secs)."
+        )
+
+        init_time = time.time()
+        entity_instances = [
+            EntityItem(**normalized_entities[unique_ent])
+            for unique_ent in sorted_unique_entities
+        ]
+        logger.info(
+            f"{len(entity_instances)} EntityItem instances were prepared "
+            f"(object preparation: {(time.time() - init_time):.3f} secs)."
+        )
+
+        init_time = time.time()
         affected_entities = EntityItem.objects.bulk_create(
-            [EntityItem(**ent) for ent in entities],
+            entity_instances,
             update_conflicts=True,
             unique_fields=['unique_ent'],
-            update_fields=[field.name for field in EntityItem._meta.fields if not field.unique],
+            update_fields=["name"],
             batch_size=settings.BULK_BATCH_SIZE
         )
         logger.info(
             f"{len(affected_entities)} EntityItem items were created (bulk_create: {(time.time() - init_time):.3f} secs)."
         )
+        del entity_instances
 
         # Retrieve real items from previous entities (updated entities didn't have their real pk)
-        affected_entities = EntityItem.objects.filter(
-            unique_ent__in=[aff_ent.unique_ent for aff_ent in affected_entities]  
+        init_time = time.time()
+        affected_entities = list(
+            EntityItem.objects.filter(
+                unique_ent__in=sorted_unique_entities
+            ).order_by("unique_ent")
+        )
+        logger.info(
+            f"{len(affected_entities)} EntityItem items were retrieved by unique_ent filter "
+            f"(filter: {(time.time() - init_time):.3f} secs)."
         )
 
-        # Create relationship between ModelClass and Entity, by using AnnotatedEntity
-        # Ignore duplicate exceptions
-        init_time = time.time()
-        len_ann_items = len(
-            AnnotatedEntity.objects.bulk_create(
-                [
-                    AnnotatedEntity(
-                        **{
-                            "entity_id": ent_item.pk,
-                            "start_offset": ann_ent["start_offset"],
-                            "end_offset": ann_ent["end_offset"],
-                            # Generic Foreignkey relation 
-                            "object_id": ann_ent["item_pk"],
-                            "content_type": ContentType.objects.get_for_model(ModelClass),
-                        }
-                    ) 
-                    for ent_item in affected_entities
-                    for ann_ent in entity_to_ann[ent_item.unique_ent]
-                ],
-                batch_size=settings.BULK_BATCH_SIZE,
-                ignore_conflicts=True
+        content_type = ContentType.objects.get_for_model(ModelClass)
+
+        # A reprocess replaces NER's current annotation set. Callers that do
+        # not specify IDs keep the additive/idempotent primitive behaviour.
+        if replace_message_ids is not None:
+            init_time = time.time()
+            delete_queryset = AnnotatedEntity.objects.filter(
+                content_type=content_type,
+                object_id__in=replacement_ids,
             )
+            with suspend_elasticsearch_sync():
+                deleted_count, deleted_by_type = delete_queryset.delete()
+            logger.info(
+                f"{deleted_count} AnnotatedEntity items were deleted "
+                f"(bulk_delete: {(time.time() - init_time):.3f} secs; "
+                f"breakdown: {deleted_by_type})."
+            )
+
+        # Create relationship between ModelClass and Entity, by using
+        # AnnotatedEntity.  A deterministic lock/upsert order sharply reduces
+        # the deadlock pattern caused by concurrent EntityItem upserts.
+        init_time = time.time()
+        annotations_to_create = []
+        for ent_item in affected_entities:
+            for ann_ent in sorted(
+                entity_to_ann.get(ent_item.unique_ent, []),
+                key=lambda ann: (
+                    str(ann["item_pk"]),
+                    ann.get("start_offset") if ann.get("start_offset") is not None else -1,
+                    ann.get("end_offset") if ann.get("end_offset") is not None else -1,
+                ),
+            ):
+                annotations_to_create.append(
+                    AnnotatedEntity(
+                        entity_id=ent_item.pk,
+                        start_offset=ann_ent["start_offset"],
+                        end_offset=ann_ent["end_offset"],
+                        object_id=ann_ent["item_pk"],
+                        content_type=content_type,
+                    )
+                )
+        logger.info(
+            f"{len(annotations_to_create)} AnnotatedEntity instances were prepared "
+            f"(object preparation: {(time.time() - init_time):.3f} secs)."
         )
+
+        init_time = time.time()
+        created_annotations = AnnotatedEntity.objects.bulk_create(
+            annotations_to_create,
+            batch_size=settings.BULK_BATCH_SIZE,
+            ignore_conflicts=True
+        )
+        len_ann_items = len(created_annotations)
         logger.info(
             f"{len_ann_items} AnnotatedEntity items were created (bulk_create: {(time.time() - init_time):.3f} secs)."
         )
@@ -599,10 +585,3 @@ def ner_db_store(
         if all_model_items_pks:
             return {ModelClass.__name__: {"and_filter_fields": {"pk__in": all_model_items_pks}}}
         return {}
-        
-    except OperationalError as exc:
-        # Generate a random countdown between 20 and 60 seconds 
-        countdown = random.randint(20, 60)
-        logger.error(f"Error in ner_database task, retrying in {countdown}secs. Traceback: {exc}")
-        # Retry the task in case of a database error
-        raise ner_db_store.retry(exc=exc, countdown=countdown)

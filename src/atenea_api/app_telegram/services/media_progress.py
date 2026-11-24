@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 import redis
 from django.conf import settings
+from app_telegram.enums import MediaProgressStatus
 
 
 PROGRESS_KEY_PREFIX = "media_download"
@@ -34,7 +35,7 @@ def init_progress(token, total=0, total_chunks=0):
         key,
         mapping={
             "token": str(token),
-            "status": "queued",
+            "status": MediaProgressStatus.QUEUED.value,
             "total": int(total or 0),
             "total_chunks": int(total_chunks or 0),
             "processed": 0,
@@ -63,7 +64,7 @@ def mark_scheduling(token):
     client.hset(
         key,
         mapping={
-            "status": "scheduling",
+            "status": MediaProgressStatus.SCHEDULING.value,
             "scheduler_started_at": _now(),
             "updated_at": _now(),
         },
@@ -104,12 +105,15 @@ def mark_schedule_completed(token):
     data = client.hgetall(key)
     total_chunks = int(data.get("total_chunks") or 0)
     chunks_completed = int(data.get("chunks_completed") or 0)
-    status = "completed" if chunks_completed >= total_chunks else "running"
-    finished_at = _now() if status == "completed" else data.get("finished_at", "")
+    status = (
+        MediaProgressStatus.COMPLETED if chunks_completed >= total_chunks
+        else MediaProgressStatus.RUNNING
+    )
+    finished_at = _now() if status == MediaProgressStatus.COMPLETED else data.get("finished_at", "")
     client.hset(
         key,
         mapping={
-            "status": status,
+            "status": status.value,
             "schedule_completed": 1,
             "scheduler_finished_at": _now(),
             "updated_at": _now(),
@@ -126,11 +130,13 @@ def mark_running(token):
     client = _client()
     data = client.hgetall(key)
     status = (
-        "scheduling"
-        if data.get("schedule_completed") == "0" and data.get("status") in {"queued", "scheduling"}
-        else "running"
+        MediaProgressStatus.SCHEDULING
+        if data.get("schedule_completed") == "0" and data.get("status") in {
+            MediaProgressStatus.QUEUED, MediaProgressStatus.SCHEDULING,
+        }
+        else MediaProgressStatus.RUNNING
     )
-    client.hset(key, mapping={"status": status, "updated_at": _now()})
+    client.hset(key, mapping={"status": status.value, "updated_at": _now()})
     client.expire(key, settings.MEDIA_DOWNLOAD_PROGRESS_TTL_SECONDS)
 
 
@@ -163,15 +169,15 @@ def complete_chunk(token):
     total_chunks = int(data.get("total_chunks") or 0)
     schedule_completed = data.get("schedule_completed", "1") == "1"
     if schedule_completed and total_chunks and chunks_completed >= total_chunks:
-        status = "completed"
+        status = MediaProgressStatus.COMPLETED
         finished_at = _now()
     else:
-        status = "running"
+        status = MediaProgressStatus.RUNNING
         finished_at = data.get("finished_at", "")
     client.hset(
         key,
         mapping={
-            "status": status,
+            "status": status.value,
             "updated_at": _now(),
             "finished_at": finished_at,
         },
@@ -187,7 +193,7 @@ def mark_failed(token, reason=""):
     client.hset(
         key,
         mapping={
-            "status": "failed",
+            "status": MediaProgressStatus.FAILED.value,
             "reason": reason,
             "updated_at": _now(),
             "finished_at": _now(),
@@ -204,7 +210,7 @@ def mark_completed(token):
     client.hset(
         key,
         mapping={
-            "status": "completed",
+            "status": MediaProgressStatus.COMPLETED.value,
             "updated_at": _now(),
             "finished_at": _now(),
         },

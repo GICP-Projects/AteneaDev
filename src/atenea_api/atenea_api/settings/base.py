@@ -11,6 +11,34 @@ from atenea_api.settings.services import (
     ServiceAuthConfig,
     ServiceEndpointConfig,
 )
+from app_entity.job_keys import (
+    NER_EXTRACT_STAGE,
+    NER_PROCESSOR,
+    NER_STORE_STAGE,
+)
+from app_metadata.job_keys import (
+    EMBEDDINGS_PROCESSOR,
+    EMBEDDINGS_STAGE,
+    SENTIMENT_PROCESSOR,
+    SENTIMENT_STAGE,
+)
+from app_telegram.job_keys import (
+    TELEGRAM_ACCESS_STAGE,
+    TELEGRAM_INDEX_MESSAGES_PROCESSOR,
+    TELEGRAM_INDEX_ROOMS_STAGE,
+    TELEGRAM_INDEX_STAGE,
+    TELEGRAM_MESSAGE_ENTITY_SYNC_STAGE,
+    TELEGRAM_ROOM_METADATA_STAGE,
+    TELEGRAM_POPULATE_STAGE,
+    TELEGRAM_SCAN_COMMENTS_PROCESSOR,
+    TELEGRAM_SCAN_COMMENTS_STAGE,
+    TELEGRAM_SCAN_STAGE,
+)
+
+
+def env_list(name):
+    """Return the non-empty, comma-separated values of an environment variable."""
+    return [value.strip() for value in os.getenv(name, "").split(",") if value.strip()]
 
 
 # ======================================================
@@ -27,7 +55,11 @@ MIN_DATE = MIN_DATETIME.date()
 
 # INTERNATIONALIZATION
 # https://docs.djangoproject.com/en/4.1/topics/i18n/
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = "en"
+LANGUAGES = (
+    ("en", "English"),
+    ("es", "Spanish"),
+)
 
 # PLATFORM TIMEZONE
 # https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
@@ -59,6 +91,7 @@ PROJECT_APP = [
     "app_scheduler",
     "app_stats",
     "app_users",
+    "app_dashboard",
 ]
 
 THIRD_PARTY_APPS = [
@@ -93,7 +126,9 @@ INSTALLED_APPS = DJANGO_APPS + PROJECT_APP + THIRD_PARTY_APPS
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 with (BASE_DIR / "pyproject.toml").open("rb") as pyproject_file:
-    PROJECT_VERSION = tomllib.load(pyproject_file)["project"]["version"]
+    PROJECT_VERSION = os.getenv("ATENEA_VERSION", "").removeprefix("v") or tomllib.load(
+        pyproject_file
+    )["project"]["version"]
 
 # 'models' directory 
 MODELS_DIR = os.path.join(BASE_DIR, 'models')
@@ -105,6 +140,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.locale.LocaleMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -123,6 +159,7 @@ TEMPLATES = [
             "context_processors": [
                 "django.template.context_processors.debug",
                 "django.template.context_processors.request",
+                "django.template.context_processors.i18n",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
                 'social_django.context_processors.backends',
@@ -308,14 +345,30 @@ CELERY_RESULT_BACKEND = f"redis://:{os.getenv('REDIS_PASSWORD')}@{os.getenv('RED
 CELERY_IGNORE_RESULT = True
 CELERY_TASK_DEFAULT_QUEUE = "default"
 CELERY_TASK_ROUTES = {
-    "app_entity.services.ner.ner_extraction": {"queue": "ner-q"},
-    # Currently, `postprocess_msgs` task is only a wrapper of `ner_extraction`
-    "app_telegram.services.telegram.postprocess_msgs": {"queue": "ner-q"},
     "app_metadata.services.embeddings.calculate_embeddings": {"queue": "embed-q"},
     "app_metadata.services.sentiments.classify_sentiment": {"queue": "sentiment-q"},
-    # ROUTE TO INDEX QUEUE
-    "app_telegram.services.telegram.items_to_index": {"queue": "index-q"},
+    "app_telegram.services.index.items_to_index": {"queue": "index-q"},
     "app_metadata.services.embeddings.items_to_index": {"queue": "index-q"},
+    # Generic Job/Batch coordination stays in the scheduler. Application work
+    # is routed from its owning app, never from app_scheduler.tasks.
+    "app_scheduler.tasks.dispatch_processing_job": {"queue": "default"},
+    "app_scheduler.tasks.dispatch_processing_handoffs": {"queue": "default"},
+    "app_scheduler.tasks.reconcile_processing_jobs": {"queue": "default"},
+    "app_entity.tasks.dispatch_ner_backfill_batches": {"queue": "default"},
+    "app_entity.tasks.extract_ner_batch": {"queue": "ner-backfill-q"},
+    "app_entity.tasks.store_ner_batch": {"queue": "ner-store-q"},
+    "app_telegram.tasks.sync_message_entity_index_batch": {"queue": "index-q"},
+    "app_telegram.tasks.scan_rooms_processing_batch": {"queue": "telegram-scan-q"},
+    "app_telegram.tasks.scan_comments_processing_batch": {"queue": "telegram-scan-comments-q"},
+    "app_telegram.tasks.populate_processing_batch": {"queue": "telegram-populate-q"},
+    "app_telegram.tasks.index_messages_processing_batch": {"queue": "index-q"},
+    "app_telegram.tasks.index_rooms_from_seeds_processing_batch": {"queue": "index-q"},
+    "app_telegram.tasks.dispatch_index_backfill_batches": {"queue": "default"},
+    "app_telegram.tasks.dispatch_scan_comments_source_batches": {"queue": "default"},
+    "app_metadata.tasks.dispatch_embeddings_backfill_batches": {"queue": "default"},
+    "app_metadata.tasks.dispatch_sentiment_backfill_batches": {"queue": "default"},
+    "app_metadata.tasks.embed_processing_batch": {"queue": "embed-q"},
+    "app_metadata.tasks.sentiment_processing_batch": {"queue": "sentiment-q"},
 }
 
 CELERY_ACCEPT_CONTENT = ["application/json"]
@@ -323,6 +376,13 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = os.getenv("DJANGO_SERVER_TIMEZONE")
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+# New durable batch tasks use late acknowledgements.  Keep the Redis delivery
+# lease above their hard limit so a slow NER call is never duplicated merely
+# because Redis made the message visible again.
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    "visibility_timeout": int(os.getenv("PROCESSING_VISIBILITY_TIMEOUT_SECONDS", "9000")),
+}
 # To customize your own logging handlers (prevent celery from replacing whatever 
 # you have configured for Django with its own loggers)
 CELERY_WORKER_HIJACK_ROOT_LOGGER = False
@@ -355,6 +415,38 @@ ELASTICSEARCH_DSL_AUTOSYNC = True
 ELASTICSEARCH_DSL_PARALLEL = True
 ELASTICSEARCH_DSL_SIGNAL_PROCESSOR = "app_base.signals.OnlyDeleteSignalES"
 
+# Bound the message IDs read into memory and the actions sent per Elasticsearch request.
+ELASTICSEARCH_INDEX_SOURCE_BATCH_SIZE = int(os.getenv("ELASTICSEARCH_INDEX_SOURCE_BATCH_SIZE", "2500"))
+ELASTICSEARCH_BULK_CHUNK_SIZE = int(os.getenv("ELASTICSEARCH_BULK_CHUNK_SIZE", "2500"))
+
+# ClickHouse stores the mutable per-message entity facts used by rankings.
+CLICKHOUSE = {
+    "host": os.getenv("CLICKHOUSE_HOST", "127.0.0.1"),
+    "port": int(os.getenv("CLICKHOUSE_PORT", "28123")),
+    "database": os.getenv("CLICKHOUSE_DATABASE") or "atenea",
+    "username": os.getenv("CLICKHOUSE_USER", "atenea"),
+    "password": os.getenv("CLICKHOUSE_PASSWORD", ""),
+    "secure": os.getenv("CLICKHOUSE_SECURE", "false").lower() in {"1", "true", "yes"},
+    "verify": os.getenv("CLICKHOUSE_VERIFY", "true").lower() in {"1", "true", "yes"},
+    "connect_timeout": int(os.getenv("CLICKHOUSE_CONNECT_TIMEOUT", "10")),
+    "send_receive_timeout": int(os.getenv("CLICKHOUSE_REQUEST_TIMEOUT", "180")),
+}
+CLICKHOUSE_BATCH_SIZE = int(os.getenv("CLICKHOUSE_BATCH_SIZE", "50000"))
+CLICKHOUSE_DEDUPLICATION_WINDOW = int(os.getenv("CLICKHOUSE_DEDUPLICATION_WINDOW", "10000"))
+CLICKHOUSE_QUERY_SETTINGS = {
+    "max_threads": int(os.getenv("CLICKHOUSE_MAX_THREADS", "8")),
+    "max_memory_usage": int(os.getenv("CLICKHOUSE_MAX_MEMORY_BYTES", "8589934592")),
+    "max_bytes_before_external_group_by": int(os.getenv("CLICKHOUSE_EXTERNAL_GROUP_BY_BYTES", "2147483648")),
+}
+if any(value < 1 for value in (
+    CLICKHOUSE_BATCH_SIZE, CLICKHOUSE_DEDUPLICATION_WINDOW,
+    CLICKHOUSE["port"], CLICKHOUSE["connect_timeout"], CLICKHOUSE["send_receive_timeout"],
+    *CLICKHOUSE_QUERY_SETTINGS.values(),
+)):
+    raise ValueError("ClickHouse sizes, limits and timeouts must be positive")
+if ELASTICSEARCH_INDEX_SOURCE_BATCH_SIZE < 1 or ELASTICSEARCH_BULK_CHUNK_SIZE < 1:
+    raise ValueError("Elasticsearch source batch and bulk chunk sizes must be positive")
+
 # Custom name of the Elasticsearch index in development / production / testing 
 # https://django-elasticsearch-dsl-drf.readthedocs.io/en/latest/quick_start.html#index-definition
 #ELASTICSEARCH_INDEX_NAMES = {}
@@ -366,6 +458,140 @@ ELASTICSEARCH_DSL_SIGNAL_PROCESSOR = "app_base.signals.OnlyDeleteSignalES"
 
 # 30 mins timeout for each request (big to avoid timeouts but finite to avoid infinit waits)
 MAX_TIMEOUT_SERVICES = 1800 
+
+# ==================================================================
+# =====        DURABLE NER PROCESSING SETTINGS               ======
+# ==================================================================
+# These defaults intentionally favour bounded, durable throughput.  They are
+# settings rather than hard-coded ceilings, so operational tuning never needs a
+# code change.
+NER_BATCH_SIZE = int(os.getenv("NER_BATCH_SIZE", "10000"))
+NER_EXTRACT_MAX_INFLIGHT = int(os.getenv("NER_EXTRACT_MAX_INFLIGHT", "2"))
+NER_BACKFILL_MAX_INFLIGHT = int(os.getenv("NER_BACKFILL_MAX_INFLIGHT", "1"))
+NER_HTTP_MAX_CONCURRENCY = int(os.getenv("NER_HTTP_MAX_CONCURRENCY", "2"))
+NER_HTTP_TIMEOUT_SECONDS = int(os.getenv("NER_HTTP_TIMEOUT_SECONDS", "300"))
+NER_EXTRACT_SOFT_TIME_LIMIT = int(os.getenv("NER_EXTRACT_SOFT_TIME_LIMIT", "900"))
+NER_EXTRACT_TIME_LIMIT = int(os.getenv("NER_EXTRACT_TIME_LIMIT", "1020"))
+NER_EXTRACT_LEASE_SECONDS = int(os.getenv("NER_EXTRACT_LEASE_SECONDS", "1200"))
+NER_STORE_SOFT_TIME_LIMIT = int(os.getenv("NER_STORE_SOFT_TIME_LIMIT", "900"))
+NER_STORE_TIME_LIMIT = int(os.getenv("NER_STORE_TIME_LIMIT", "1020"))
+NER_STORE_LEASE_SECONDS = int(os.getenv("NER_STORE_LEASE_SECONDS", "1200"))
+PROCESSING_BATCH_LEASE_SECONDS = int(os.getenv("PROCESSING_BATCH_LEASE_SECONDS", "1200"))
+NER_EXTRACT_MAX_RETRIES = int(os.getenv("NER_EXTRACT_MAX_RETRIES", "3"))
+NER_STORE_MAX_RETRIES = int(os.getenv("NER_STORE_MAX_RETRIES", "10"))
+NER_RECONCILE_INTERVAL_SECONDS = int(os.getenv("NER_RECONCILE_INTERVAL_SECONDS", "60"))
+NER_METADATA_TIMEOUT_SECONDS = int(os.getenv("NER_METADATA_TIMEOUT_SECONDS", "20"))
+
+INDEX_MANUAL_BATCH_SIZE = int(os.getenv("INDEX_MANUAL_BATCH_SIZE", "100000"))
+INDEX_MAX_INFLIGHT = int(os.getenv("INDEX_MAX_INFLIGHT", "1"))
+INDEX_MAX_RETRIES = int(os.getenv("INDEX_MAX_RETRIES", "3"))
+INDEX_SOFT_TIME_LIMIT = int(os.getenv("INDEX_SOFT_TIME_LIMIT", "3600"))
+INDEX_TIME_LIMIT = int(os.getenv("INDEX_TIME_LIMIT", "3900"))
+INDEX_LEASE_SECONDS = int(os.getenv("INDEX_LEASE_SECONDS", "4200"))
+
+TELEGRAM_SCAN_ROOMS_PER_BATCH = int(os.getenv("TELEGRAM_SCAN_ROOMS_PER_BATCH", "300"))
+TELEGRAM_SCAN_COMMENTS_MESSAGES_PER_BATCH = int(os.getenv("TELEGRAM_SCAN_COMMENTS_MESSAGES_PER_BATCH", "300"))
+TELEGRAM_SCAN_MAX_INFLIGHT = int(os.getenv("TELEGRAM_SCAN_MAX_INFLIGHT", "4"))
+TELEGRAM_ROOM_METADATA_ROOMS_PER_BATCH = int(os.getenv("TELEGRAM_ROOM_METADATA_ROOMS_PER_BATCH", "20"))
+TELEGRAM_ROOM_METADATA_MAX_INFLIGHT = int(os.getenv("TELEGRAM_ROOM_METADATA_MAX_INFLIGHT", "2"))
+TELEGRAM_SCAN_MAX_RETRIES = int(os.getenv("TELEGRAM_SCAN_MAX_RETRIES", "3"))
+TELEGRAM_SCAN_SOFT_TIME_LIMIT = int(os.getenv("TELEGRAM_SCAN_SOFT_TIME_LIMIT", "7200"))
+TELEGRAM_SCAN_TIME_LIMIT = int(os.getenv("TELEGRAM_SCAN_TIME_LIMIT", "7800"))
+TELEGRAM_SCAN_LEASE_SECONDS = int(os.getenv("TELEGRAM_SCAN_LEASE_SECONDS", "8400"))
+TELEGRAM_POPULATE_SEEDS_PER_BATCH = int(os.getenv("TELEGRAM_POPULATE_SEEDS_PER_BATCH", "200"))
+TELEGRAM_POPULATE_MAX_INFLIGHT = int(os.getenv("TELEGRAM_POPULATE_MAX_INFLIGHT", "4"))
+TELEGRAM_POPULATE_SOFT_TIME_LIMIT = int(os.getenv("TELEGRAM_POPULATE_SOFT_TIME_LIMIT", "3600"))
+TELEGRAM_POPULATE_TIME_LIMIT = int(os.getenv("TELEGRAM_POPULATE_TIME_LIMIT", "3900"))
+TELEGRAM_POPULATE_LEASE_SECONDS = int(os.getenv("TELEGRAM_POPULATE_LEASE_SECONDS", "4200"))
+TELEGRAM_ACCESS_ROOMS_PER_BATCH = int(os.getenv("TELEGRAM_ACCESS_ROOMS_PER_BATCH", "200"))
+TELEGRAM_ACCESS_MAX_INFLIGHT = int(os.getenv("TELEGRAM_ACCESS_MAX_INFLIGHT", "4"))
+TELEGRAM_ACCESS_MAX_RETRIES = int(os.getenv("TELEGRAM_ACCESS_MAX_RETRIES", "3"))
+TELEGRAM_ACCESS_SOFT_TIME_LIMIT = int(os.getenv("TELEGRAM_ACCESS_SOFT_TIME_LIMIT", "3600"))
+TELEGRAM_ACCESS_TIME_LIMIT = int(os.getenv("TELEGRAM_ACCESS_TIME_LIMIT", "3900"))
+TELEGRAM_ACCESS_LEASE_SECONDS = int(os.getenv("TELEGRAM_ACCESS_LEASE_SECONDS", "4200"))
+
+EMBEDDINGS_SOURCE_READ_SIZE = int(os.getenv("EMBEDDINGS_SOURCE_READ_SIZE", "100000"))
+EMBEDDINGS_BATCH_SIZE = int(os.getenv("EMBEDDINGS_BATCH_SIZE", "10000"))
+SENTIMENT_SOURCE_READ_SIZE = int(os.getenv("SENTIMENT_SOURCE_READ_SIZE", "500000"))
+SENTIMENT_BATCH_SIZE = int(os.getenv("SENTIMENT_BATCH_SIZE", "10000"))
+METADATA_MAX_INFLIGHT = int(os.getenv("METADATA_MAX_INFLIGHT", "1"))
+METADATA_MAX_RETRIES = int(os.getenv("METADATA_MAX_RETRIES", "3"))
+METADATA_SOFT_TIME_LIMIT = int(os.getenv("METADATA_SOFT_TIME_LIMIT", "3600"))
+METADATA_TIME_LIMIT = int(os.getenv("METADATA_TIME_LIMIT", "3900"))
+METADATA_LEASE_SECONDS = int(os.getenv("METADATA_LEASE_SECONDS", "4200"))
+
+# The scheduler knows only these opaque keys. The task implementations remain
+# in their owning applications, making later embedding/sentiment workflows a
+# registry extension rather than an NER-specific scheduler change.
+PROCESSING_STAGE_TASKS = {
+    TELEGRAM_ROOM_METADATA_STAGE: {
+        "task": "app_telegram.tasks.sync_room_metadata_batch", "queue": "index-q",
+        "lease_seconds": INDEX_LEASE_SECONDS,
+    },
+    TELEGRAM_MESSAGE_ENTITY_SYNC_STAGE: {
+        "task": "app_telegram.tasks.sync_message_entity_index_batch", "queue": "index-q",
+        "lease_seconds": INDEX_LEASE_SECONDS,
+    },
+    NER_EXTRACT_STAGE: {
+        "task": "app_entity.tasks.extract_ner_batch",
+        "queues": {"live": "ner-live-q", "backfill": "ner-backfill-q"},
+        "lease_seconds": NER_EXTRACT_LEASE_SECONDS,
+    },
+    NER_STORE_STAGE: {
+        "task": "app_entity.tasks.store_ner_batch", "queue": "ner-store-q",
+        "lease_seconds": NER_STORE_LEASE_SECONDS,
+    },
+    TELEGRAM_SCAN_STAGE: {
+        "task": "app_telegram.tasks.scan_rooms_processing_batch", "queue": "telegram-scan-q",
+        "lease_seconds": TELEGRAM_SCAN_LEASE_SECONDS,
+    },
+    TELEGRAM_SCAN_COMMENTS_STAGE: {
+        "task": "app_telegram.tasks.scan_comments_processing_batch", "queue": "telegram-scan-comments-q",
+        "lease_seconds": TELEGRAM_SCAN_LEASE_SECONDS,
+    },
+    TELEGRAM_POPULATE_STAGE: {
+        "task": "app_telegram.tasks.populate_processing_batch", "queue": "telegram-populate-q",
+        "lease_seconds": TELEGRAM_POPULATE_LEASE_SECONDS,
+    },
+    # Access recovery uses Telegram's ResolveUsername API like Populate, so it
+    # shares that dedicated low-concurrency worker queue.
+    TELEGRAM_ACCESS_STAGE: {
+        "task": "app_telegram.tasks.access_rooms_processing_batch", "queue": "telegram-populate-q",
+        "lease_seconds": TELEGRAM_ACCESS_LEASE_SECONDS,
+    },
+    TELEGRAM_INDEX_STAGE: {
+        "task": "app_telegram.tasks.index_messages_processing_batch", "queue": "index-q",
+        "lease_seconds": INDEX_LEASE_SECONDS,
+    },
+    TELEGRAM_INDEX_ROOMS_STAGE: {
+        "task": "app_telegram.tasks.index_rooms_from_seeds_processing_batch", "queue": "index-q",
+        "lease_seconds": INDEX_LEASE_SECONDS,
+    },
+    EMBEDDINGS_STAGE: {
+        "task": "app_metadata.tasks.embed_processing_batch", "queue": "embed-q",
+        "lease_seconds": METADATA_LEASE_SECONDS,
+    },
+    SENTIMENT_STAGE: {
+        "task": "app_metadata.tasks.sentiment_processing_batch", "queue": "sentiment-q",
+        "lease_seconds": METADATA_LEASE_SECONDS,
+    },
+}
+PROCESSING_SOURCE_DISPATCH_TASKS = {
+    NER_PROCESSOR: {"task": "app_entity.tasks.dispatch_ner_backfill_batches", "queue": "default"},
+    TELEGRAM_INDEX_MESSAGES_PROCESSOR: {"task": "app_telegram.tasks.dispatch_index_backfill_batches", "queue": "default"},
+    TELEGRAM_SCAN_COMMENTS_PROCESSOR: {"task": "app_telegram.tasks.dispatch_scan_comments_source_batches", "queue": "default"},
+    EMBEDDINGS_PROCESSOR: {"task": "app_metadata.tasks.dispatch_embeddings_backfill_batches", "queue": "default"},
+    SENTIMENT_PROCESSOR: {"task": "app_metadata.tasks.dispatch_sentiment_backfill_batches", "queue": "default"},
+}
+
+# DatabaseScheduler merges this entry into django-celery-beat's persistent
+# schedule.  It is the safety net for expired worker leases and missed publishes.
+CELERY_BEAT_SCHEDULE = {
+    "reconcile-durable-processing-jobs": {
+        "task": "app_scheduler.tasks.reconcile_processing_jobs",
+        "schedule": NER_RECONCILE_INTERVAL_SECONDS,
+    },
+}
 
 NER_SERVICE = NERServiceConfig(
     host=f"http://{os.getenv('NER_SERVICE_HOST')}:{os.getenv('NER_SERVICE_PORT')}/ner",
@@ -396,9 +622,10 @@ NER_SERVICE = NERServiceConfig(
         #   ]
         #
         # NOTE: Response is a list (not a dict), DEFAULT_RETURN_FORMAT must be `list`.
-        "ner": ServiceEndpointConfig(path="/ner", response_label="entities")
+        "ner": ServiceEndpointConfig(path="/ner", response_label="entities"),
+        "metadata": ServiceEndpointConfig(path="/metadata", response_label="metadata"),
     },
-    max_items_by_request=int(os.getenv("NER_SERVICE_MAX_DATA_BY_REQUEST")),
+    max_items_by_request=int(os.getenv("NER_SERVICE_MAX_DATA_BY_REQUEST", "2000")),
 
     # Recommendation: (nºdocker containers) * (nºrequest by container)
     # Depends on the server capabilities, is not recommended to overload (worst performance)

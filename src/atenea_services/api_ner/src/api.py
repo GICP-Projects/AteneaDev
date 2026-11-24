@@ -1,5 +1,6 @@
 import logging
 import logging.config
+import spacy
 from settings import (
     ALLOWED_API_KEYS,
     ALLOWED_LANG_MODELS,
@@ -89,10 +90,40 @@ async def load(api_key: str = Security(get_api_key)):
     "/check",
     description="Check if all needed elements have been loaded.",
 )
-def check(api_key: str = Security(get_api_key)):
+async def check(api_key: str = Security(get_api_key)):
     if not NER_API:
         return {"return": False}
     return {"return": True}
+
+
+@app.get(
+    "/metadata",
+    description="Return the version information Atenea records for each NER batch.",
+)
+async def metadata(api_key: str = Security(get_api_key)):
+    """Expose model versions without exposing operational configuration.
+
+    The endpoint uses exactly the same API-key dependency as the extraction
+    endpoints.  When models are loaded, spaCy's package metadata is more useful
+    than merely echoing settings because it identifies the actual loaded model.
+    """
+
+    models = {}
+    for language, (configured_name, disabled) in ALLOWED_LANG_MODELS.items():
+        loaded = NER_API.get(language)
+        meta = getattr(getattr(loaded, "nlp", None), "meta", {}) or {}
+        models[language] = {
+            "name": meta.get("name") or configured_name,
+            "version": meta.get("version") or "unknown",
+            "disable": list(disabled),
+        }
+
+    return {
+        "service_version": PROJECT_VERSION,
+        "spacy_version": spacy.__version__,
+        "models": models,
+        "schema_version": "ner-output-v1",
+    }
 
 
 # ======================================================
@@ -122,7 +153,10 @@ def _ner(request, annotate_text = False):
     description="Endpoint to extract entities from a given text.",
     response_model=List[ResponseNER],
 )
-def ner(request: NERRequestList, api_key: str = Security(get_api_key)):
+async def ner(request: NERRequestList, api_key: str = Security(get_api_key)):
+    # NER is intentionally bounded by Atenea's durable dispatcher.  Keeping
+    # this handler async avoids FastAPI's extra threadpool hand-off while the
+    # synchronous model call remains deterministic within one API worker.
     results = _ner(request)
     return results
 
@@ -133,6 +167,6 @@ def ner(request: NERRequestList, api_key: str = Security(get_api_key)):
     "In this case, predict the entities in the text",
     response_model=List[ResponseAnnotate]
 )
-def annotate(request: NERRequestList, api_key: str = Security(get_api_key)):
+async def annotate(request: NERRequestList, api_key: str = Security(get_api_key)):
     results = _ner(request, annotate_text=True)
     return results

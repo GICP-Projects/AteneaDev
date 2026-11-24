@@ -9,6 +9,7 @@ from app_base.languages import LANGS_ISO_639_1
 
 LANGUAGES_URL = "/api/v1/front/form/languages"
 TAGS_URL = "/api/v1/front/form/tags"
+ROOMS_URL = "/api/v1/front/form/rooms"
 
 
 def authenticate_with_api_key(api_client):
@@ -17,7 +18,7 @@ def authenticate_with_api_key(api_client):
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("url", [LANGUAGES_URL, TAGS_URL])
+@pytest.mark.parametrize("url", [LANGUAGES_URL, TAGS_URL, ROOMS_URL])
 def test_frontend_endpoints_require_api_key(api_client, url):
     response = api_client.get(url)
 
@@ -60,6 +61,24 @@ def test_tags_endpoint_normalizes_sorts_and_deduplicates_tags(api_client, room_f
     assert response.status_code == status.HTTP_200_OK
     assert response.data["results"] == ["data", "news", "research"]
     assert response.data["count"] == 3
+
+
+@pytest.mark.django_db
+def test_rooms_endpoint_returns_non_deleted_public_names(api_client, room_factory):
+    room_factory(tg_id=10101, unique_name="zulu_room", link="https://t.me/zulu_room")
+    room_factory(tg_id=10102, unique_name="alpha_room", link="https://t.me/alpha_room")
+    room_factory(
+        tg_id=10103,
+        unique_name="hidden_room",
+        link="https://t.me/hidden_room",
+        is_deleted=True,
+    )
+    authenticate_with_api_key(api_client)
+
+    response = api_client.get(ROOMS_URL)
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data["results"] == ["alpha_room", "zulu_room"]
 
 
 @pytest.mark.django_db

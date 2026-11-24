@@ -58,6 +58,6 @@ urlpatterns = [
     path(API_V1_ROOT + 'oauth/', include('app_users.urls', namespace='drf_social_o2')),
 
     ### API URLS ###
-    path('admin/', admin.site.urls)
+    path('admin/', admin.site.urls),
+    path('dashboard/', include('app_dashboard.urls')),
 ] + endpoints_urls + doc_urls
-

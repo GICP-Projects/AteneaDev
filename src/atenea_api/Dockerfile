@@ -31,10 +31,12 @@ WORKDIR /app/
 COPY --from=compiler /opt/venv /opt/venv
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget && \
+    gettext wget && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY . /app/
+
+RUN DJANGO_SETTINGS_MODULE=atenea_api.settings.test python manage.py compilemessages --locale=es
 
 RUN chmod +x ./download.sh
 RUN ./download.sh

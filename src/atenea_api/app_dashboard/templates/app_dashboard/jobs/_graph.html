@@ -1,0 +1,102 @@
+{% load i18n %}
+{% if graph.pipeline.columns %}
+<div class="dag-shell" data-dag-graph data-dag-active="{{ graph.active|yesno:'true,false' }}"
+    data-dag-virtual="{{ graph.pipeline.virtual|yesno:'true,false' }}"
+    data-batch-detail-url="{% url 'app_dashboard:job-batch-detail' graph.root_job_id %}"
+    data-label-batch="{% translate 'Batch' %}" data-label-input="{% translate 'Input' %}"
+    data-label-detail="{% translate 'View detail' %}" data-label-stages="{% translate 'Batch stages' %}"
+    data-label-loading="{% translate 'Loading batch details…' %}"
+    data-label-load-error="{% translate 'Could not load batch details. Scroll away and back to try again.' %}"
+    data-label-queued="{% translate 'Queued' %}" data-label-running="{% translate 'Running' %}"
+    data-label-retrying="{% translate 'Retrying' %}" data-label-completed="{% translate 'Completed' %}"
+    data-label-failed="{% translate 'Failed' %}" data-label-cancelled="{% translate 'Cancelled' %}"
+    aria-label="{% translate 'Job pipeline graph' %}">
+    {{ graph.pipeline.snapshot|json_script:"dag-pipeline-snapshot" }}
+    <div class="dag-toolbar">
+        <div>
+            <strong>{% translate "Pipeline flow" %}</strong>
+            <span data-dag-task-count>{{ graph.pipeline.snapshot.task_count_label }}</span>
+        </div>
+        <div class="dag-toolbar-actions">
+            <div class="dag-zoom-controls" role="group" aria-label="{% translate 'Graph view controls' %}">
+                <button type="button" class="dag-zoom-button" data-dag-zoom-out aria-label="{% translate 'Zoom out' %}" title="{% translate 'Zoom out' %}"><span aria-hidden="true">−</span></button>
+                <button type="button" class="dag-zoom-button dag-zoom-reset" data-dag-zoom-reset aria-label="{% translate 'Reset zoom' %}" title="{% translate 'Reset zoom' %}"><span data-dag-zoom-label>100%</span></button>
+                <button type="button" class="dag-zoom-button" data-dag-zoom-in aria-label="{% translate 'Zoom in' %}" title="{% translate 'Zoom in' %}"><span aria-hidden="true">+</span></button>
+                <button type="button" class="dag-zoom-button dag-fullscreen-button" data-dag-fullscreen
+                    data-enter-label="{% translate 'Enter fullscreen' %}" data-exit-label="{% translate 'Exit fullscreen' %}"
+                    aria-label="{% translate 'Enter fullscreen' %}" title="{% translate 'Enter fullscreen' %}" aria-pressed="false">
+                    <svg aria-hidden="true" viewBox="0 0 20 20" focusable="false"><path d="M7 3H3v4M13 3h4v4M17 13v4h-4M7 17H3v-4M3 7l5-5m9 5-5-5m5 11-5 5m-9-5 5 5"/></svg>
+                </button>
+            </div>
+            <div class="dag-legend" aria-label="{% translate 'Graph legend' %}">
+                <span class="dag-legend-item dag-legend--queued" data-dag-tooltip="{% translate 'Queued' %}" role="img" tabindex="0" aria-label="{% translate 'Queued' %}" title="{% translate 'Queued' %}"><span aria-hidden="true">○</span></span>
+                <span class="dag-legend-item dag-legend--running" data-dag-tooltip="{% translate 'Running' %}" role="img" tabindex="0" aria-label="{% translate 'Running' %}" title="{% translate 'Running' %}"><span aria-hidden="true">▶</span></span>
+                <span class="dag-legend-item dag-legend--retrying" data-dag-tooltip="{% translate 'Retrying' %}" role="img" tabindex="0" aria-label="{% translate 'Retrying' %}" title="{% translate 'Retrying' %}"><span aria-hidden="true">↻</span></span>
+                <span class="dag-legend-item dag-legend--completed" data-dag-tooltip="{% translate 'Completed' %}" role="img" tabindex="0" aria-label="{% translate 'Completed' %}" title="{% translate 'Completed' %}"><span aria-hidden="true">✓</span></span>
+                <span class="dag-legend-item dag-legend--failed" data-dag-tooltip="{% translate 'Failed' %}" role="img" tabindex="0" aria-label="{% translate 'Failed' %}" title="{% translate 'Failed' %}"><span aria-hidden="true">!</span></span>
+            </div>
+        </div>
+    </div>
+
+    <div class="dag-viewport" data-dag-viewport>
+        <div class="dag-zoom-space" data-dag-zoom-space>
+            <div class="dag-canvas" data-dag-canvas>
+            <svg class="dag-edges" data-dag-edges aria-hidden="true" focusable="false">
+                <defs>
+                    <marker id="dag-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+                        <path class="dag-arrow-head" d="M0 0 L8 4 L0 8 Z"></path>
+                    </marker>
+                </defs>
+                <g data-dag-buses aria-hidden="true"></g>
+                <g data-dag-edge-bases>
+                {% if not graph.pipeline.virtual %}
+                {% for edge in graph.pipeline.edges %}
+                <path
+                    class="dag-edge dag-edge--{{ edge.state }}"
+                    data-dag-edge="{{ edge.id }}"
+                    data-edge-state="{{ edge.state }}"
+                    data-source-id="{{ edge.source }}"
+                    data-target-id="{{ edge.target }}"
+                    marker-end="url(#dag-arrow)"
+                ></path>
+                {% endfor %}
+                {% endif %}
+                </g>
+                <g data-dag-edge-flows aria-hidden="true">
+                {% if not graph.pipeline.virtual %}
+                {% for edge in graph.pipeline.edges %}
+                <path
+                    class="dag-edge-flow dag-edge-flow--{{ edge.state }}"
+                    data-dag-edge-flow="{{ edge.id }}"
+                    data-source-id="{{ edge.source }}"
+                    data-target-id="{{ edge.target }}"
+                ></path>
+                {% endfor %}
+                {% endif %}
+                </g>
+            </svg>
+
+            <div class="dag-columns">
+                {% for column in graph.pipeline.columns %}
+                <section class="dag-rank" data-rank-id="{{ column.id }}" data-task-count="{{ column.task_count }}" aria-labelledby="{{ column.id }}-title">
+                    <header class="dag-rank-header">
+                        <div>
+                            <span class="dag-rank-kicker">{% translate "Rank" %} {{ forloop.counter }}</span>
+                            <h3 id="{{ column.id }}-title">{{ column.label }}</h3>
+                        </div>
+                        <span class="dag-rank-count" title="{% blocktranslate with count=column.task_count %}{{ count }} batches{% endblocktranslate %}">{{ column.task_count }}</span>
+                    </header>
+                    <div class="dag-rank-jobs" data-dag-rank-scroll tabindex="0" role="region" aria-labelledby="{{ column.id }}-title">
+                        {% for node in column.jobs %}
+                            {% include "app_dashboard/jobs/_graph_job.html" with node=node %}
+                        {% endfor %}
+                    </div>
+                </section>
+                {% endfor %}
+            </div>
+            </div>
+        </div>
+    </div>
+
+</div>
+{% else %}<p class="empty-inline">{% translate "No stage information is available yet." %}</p>{% endif %}

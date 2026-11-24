@@ -3,11 +3,15 @@ import uuid
 from django.conf import settings
 from django.utils import timezone
 from rest_framework import serializers
+from app_entity.models import EntityItem
+from app_entity.serializers import EntityTypeNameField
 from app_base.languages import LANGS_ISO_639_1
 from django_elasticsearch_dsl_drf.serializers import DocumentSerializer
 from app_base.serializers import BaseDateRangeSerializer, BulkListSerializer
 from app_telegram.utils import telegram_link_normalizer
-from app_telegram.models import SeedItem, TelegramAuth, MessageItem, TelegramExternalUrlItem, TelegramMediaItem
+from app_telegram.models import (
+    BaseTelegramEntity, SeedItem, TelegramAuth, MessageItem, TelegramExternalUrlItem, TelegramMediaItem,
+)
 from app_metadata.serializers import EmbeddingSerializer
 from app_telegram.documents import RoomDocument, MessageDocument
 
@@ -131,11 +135,9 @@ class SimpleFilterSeedSerializer(BaseDateRangeSerializer):
         required=False, 
         max_length=20,
         help_text=(
-            "The tag parameter accepts a list of tags (e.g., tag=value1&tag=value2). "
-            "The category matching is case-insensitive and does not require "
-            "an exact match, as it uses a substring search. The list is "
-            "processed using an OR (by default) or AND logic (depends on "
-            "cat_match parameter)."
+            "Exact, case-sensitive seed tag values. Repeat tag to provide multiple "
+            "values; tag_match=any (default) matches at least one, while "
+            "tag_match=all requires every value."
         )
     )
     lang = serializers.ListField(
@@ -237,11 +239,9 @@ class FilterRoomSerializer(BaseDateRangeSerializer):
         required=False, 
         max_length=20,
         help_text=(
-            "The tag parameter accepts a list of tags (e.g., tag=value1&tag=value2). "
-            "The category matching is case-insensitive and does not require "
-            "an exact match, as it uses a substring search. The list is "
-            "processed using an OR (by default) or AND logic (depends on "
-            "cat_match parameter)."
+            "Exact, case-sensitive room tag values. Repeat tag to provide multiple "
+            "values; tag_match=any (default) matches at least one, while "
+            "tag_match=all requires every value."
         )
     )
     lang = serializers.ListField(
@@ -257,6 +257,8 @@ class FilterRoomSerializer(BaseDateRangeSerializer):
     )
     is_channel = serializers.BooleanField(
         required=False,
+        allow_null=True,
+        default=None,
         help_text=(
             "To filter only Channels (True), Groups (False) or any (None). Default=None."
         )
@@ -292,6 +294,16 @@ class FilterRoomSerializer(BaseDateRangeSerializer):
 
 
 class ScanRoomSerializer(FilterRoomSerializer):
+    check_room = serializers.BooleanField(
+        required=False, default=False,
+        help_text=(
+            "Check the Telegram username, public link and title. When any differs, "
+            "also check the description (about), record previous changed "
+            "username/title/about values in username_history, and synchronize "
+            "only affected Room and message data. Description-only changes "
+            "are not detected by this scan. Default: disabled."
+        ),
+    )
     max_msgs = serializers.IntegerField(
         required=False, 
         min_value=10, 
@@ -338,10 +350,9 @@ class SimpleMessageFilterSerializer(BaseDateRangeSerializer):
         required=False,
         max_length=20,
         help_text=(
-            "The tag parameter accepts a list of room tags "
-            "(e.g., tag=value1&tag=value2). The matching is "
-            "case-insensitive and uses substring search. The list is "
-            "processed using OR by default or AND when tag_match=all."
+            "Exact, case-sensitive room tag values. Repeat tag to provide multiple "
+            "values; tag_match=any (default) matches at least one, while "
+            "tag_match=all requires every value."
         )
     )
 
@@ -398,6 +409,71 @@ class SimpleMessageFilterSerializer(BaseDateRangeSerializer):
         dt_value = datetime.combine(value, datetime.min.time()) 
         return timezone.make_aware(dt_value)
 
+
+# ======================================================
+# =====     MESSAGE ENTITY RANKING SERIALIZERS     =====
+# ======================================================
+
+
+class EntityRankingFilterSerializer(SimpleMessageFilterSerializer):
+    """Filters and ordering for entities found in selected Telegram messages."""
+
+    entity_type = serializers.ListField(
+        child=serializers.ChoiceField(choices=EntityItem.SPACY_TYPES + EntityItem.CUSTOM_TYPES),
+        required=False, max_length=21,
+        help_text="Include only these entity types. Repeat entity_type for multiple types.",
+    )
+    entity_name = serializers.CharField(required=False, max_length=2048)
+    order = serializers.ChoiceField(choices=("messages", "appearances"), default="messages")
+    cursor = serializers.CharField(required=False)
+    page_size = serializers.IntegerField(required=False, min_value=1, max_value=100)
+
+
+class EntityRankingResultSerializer(serializers.Serializer):
+    """Entity metadata, message counts and a link to matching messages."""
+
+    entity_id = serializers.UUIDField()
+    name = serializers.CharField()
+    type = EntityTypeNameField()
+    message_count = serializers.IntegerField()
+    appearance_count = serializers.IntegerField()
+    messages_url = serializers.CharField()
+
+
+class EntityRankingResponseSerializer(serializers.Serializer):
+    """One page of message entity rankings and its navigation links."""
+
+    next = serializers.CharField(allow_null=True)
+    previous = serializers.CharField(allow_null=True)
+    token = serializers.UUIDField(allow_null=True)
+    results = EntityRankingResultSerializer(many=True)
+
+
+# ======================================================
+# =====         MESSAGE RETRIEVAL FILTERS          =====
+# ======================================================
+
+
+class MessageRetrievalFilterSerializer(SimpleMessageFilterSerializer):
+    """Explicit allowlist of filters supported by stored-message retrieval."""
+
+    entity = serializers.ListField(
+        child=serializers.UUIDField(), required=False, max_length=20,
+        help_text="Entity UUIDs. Match messages containing any of these entities.",
+    )
+
+    tag = serializers.ListField(
+        child=serializers.CharField(max_length=64, allow_blank=False),
+        required=False,
+        max_length=20,
+        help_text=(
+            "Exact, case-sensitive room tag values. Repeat tag to provide multiple "
+            "values; tag_match=any (default) matches at least one, while "
+            "tag_match=all requires every value."
+        ),
+    )
+
+
 class FilterMsgSerializer(SimpleMessageFilterSerializer):
 
     MEDIA_TYPES = [type[0] for type in MessageItem.TYPE_CHOICES]
@@ -444,7 +520,24 @@ class FilterMsgSerializer(SimpleMessageFilterSerializer):
             f"Default: disabled. Format: {settings.FORMAT_DATE}."
         )
     )
-    
+
+
+class NERFilterMsgSerializer(FilterMsgSerializer):
+    """Message filters plus an explicit opt-in to reprocess NER state."""
+
+    refresh = serializers.BooleanField(
+        default=False,
+        required=False,
+        help_text="Reprocess matching messages even if their NER state is complete.",
+    )
+
+    reindex = serializers.BooleanField(
+        default=False,
+        required=False,
+        help_text="Run the MessageItem Elasticsearch index stage after NER storage.",
+    )
+
+
 class EmbedFilterMsgSerializer(FilterMsgSerializer):
     instruct = serializers.CharField(
         max_length=128, 
@@ -477,6 +570,7 @@ class EmbedFilterMsgSerializer(FilterMsgSerializer):
     )
 
 class ScanRepliesMsgSerializer(FilterMsgSerializer):
+    """Select parent messages for comments collection, with a per-parent limit."""
 
     tag_match = serializers.ChoiceField(
         MATCH_CHOICES,
@@ -493,11 +587,9 @@ class ScanRepliesMsgSerializer(FilterMsgSerializer):
         required=False, 
         max_length=20,
         help_text=(
-            "The tag parameter accepts a list of tags (e.g., tag=value1&tag=value2). "
-            "The category matching is case-insensitive and does not require "
-            "an exact match, as it uses a substring search. The list is "
-            "processed using an OR (by default) or AND logic (depends on "
-            "cat_match parameter)."
+            "Exact, case-sensitive room tag values. Repeat tag to provide multiple "
+            "values; tag_match=any (default) matches at least one, while "
+            "tag_match=all requires every value."
         )
     )   
 
@@ -508,22 +600,16 @@ class ScanRepliesMsgSerializer(FilterMsgSerializer):
         help_text="Max number of message replies they will be extracted per message."
     ) 
 
-    total_msgs = serializers.IntegerField(
-        required=False, 
-        default=1250000,
-        min_value=10000, 
-        max_value=1250000,
-        help_text=(
-            "Total number of message replies to be extracted globally. Caution: "
-            "Setting a higher value may lead to significant resource consumption. "
-            "Use with caution to avoid overloading the system. Default=1.250.000"
-        )
-    )
-
     def __init__(self, *args, **kwargs):
+        """Initialize DRF fields from args/kwargs; remove unsupported source controls.
+
+        Return None and persist nothing. Parents are always non-replies and
+        their batch size is configured server-side; DRF initialization errors
+        propagate.
+        """
         super().__init__(*args, **kwargs)
-        # Remove the block_size field
         self.fields.pop("block_size", None)
+        self.fields.pop("is_reply", None)
 
 
 # ==================================================================
@@ -541,7 +627,7 @@ class MediaMessageFilterSerializer(SimpleMessageFilterSerializer):
         child=serializers.CharField(max_length=64, allow_blank=False),
         required=False,
         max_length=20,
-        help_text="Room tags to filter messages."
+        help_text="Exact, case-sensitive room tag values to filter messages."
     )
     lang = serializers.ListField(
         child=serializers.ChoiceField(required=False, choices=LANGS_ISO_639_1),
@@ -660,8 +746,8 @@ class DownloadableDeleteSerializer(BaseDateRangeSerializer):
         required=False,
         max_length=20,
         help_text=(
-            "Room tags to scope the delete request. At least one room or tag "
-            "filter is required."
+            "Exact, case-sensitive room tag values to scope the delete request. "
+            "At least one room or tag filter is required."
         )
     )
     createdat_min = serializers.DateField(
@@ -731,7 +817,7 @@ class MessageDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = MessageItem
         fields = [
-            'link', 'msg_id', 'room', 'sender', 'media_type', 'text', 
+            'id', 'link', 'msg_id', 'room', 'sender', 'media_type', 'text',
             'created_at', 'lang', 'views', 'is_reply', 'reply_to_id'
         ]
 
@@ -776,6 +862,13 @@ class MessageAISearchSerializer(serializers.Serializer):
 # ==================================================================
 
 class RoomDocumentSerializer(DocumentSerializer):
+    username_history = serializers.JSONField(
+        read_only=True, default=list,
+        help_text=(
+            "Previous username, title and about values with detected_at. "
+            "Null marks unchanged fields; unknown marks unavailable legacy values."
+        ),
+    )
     class Meta:
         document = RoomDocument
 
@@ -784,7 +877,8 @@ class RoomDocumentSerializer(DocumentSerializer):
             'title',
             'about',
             'tags',
-            'lang'
+            'lang',
+            'username_history',
         )
 
 
@@ -814,8 +908,8 @@ class MessageDocumentSerializer(DocumentSerializer):
         # Note: 'obj' here is the result from Elasticsearch (a hit object), not the Django model.
         # It's not a MessageDocument but shares the same structure.
         try:
-            return f"https://t.me/{obj.room_name}/{obj.msg_id}"
-        except AttributeError:
+            return f"{BaseTelegramEntity.build_public_link(obj.room_name)}/{obj.msg_id}"
+        except (AttributeError, ValueError):
             return None
 
 

@@ -1,15 +1,25 @@
-import math
+import hashlib
+import json
 import logging
+import math
 import uuid
 from collections.abc import Iterable
 from django.conf import settings
+from django.core import signing
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.contrib.gis.geoip2 import GeoIP2
+from django.db.models import F, Field, Func, Q, QuerySet, Value
+from django.db.models.lookups import GreaterThan, LessThan
 from rest_framework import request, pagination, serializers, status
 from rest_framework.response import Response
 from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.utils.urls import replace_query_param
 from app_base.models import Query
-from app_base.serializers import GenericResponseSerializer, PKsSerializer
+from app_base.serializers import (
+    GenericResponseSerializer,
+    GenericResultResponseSerializer,
+    PKsSerializer,
+)
 from app_users.models import User
 
 
@@ -71,6 +81,302 @@ class BasePaginator(pagination.PageNumberPagination):
                 "results": data,
             }
         )
+
+    def get_paginated_response_schema(self, schema):
+        """Document the extra trace token emitted by this paginator."""
+        response_schema = super().get_paginated_response_schema(schema)
+        response_schema["properties"]["token"] = {
+            "type": "string",
+            "nullable": True,
+        }
+        response_schema["required"] = list(
+            dict.fromkeys([*response_schema.get("required", []), "token"])
+        )
+        return response_schema
+
+
+class CursorPaginator(pagination.CursorPagination):
+    """Signed composite cursors, with nulls last and a unique final field.
+
+    DRF's links use a unique composite position instead of offsets for repeated
+    timestamps. On PostgreSQL, homogeneous orderings use row comparisons; a
+    nullable first field is traversed as a separate NULLS LAST partition. A
+    matching composite B-tree index is needed for index-level seeks. Other
+    orderings use the lexicographic fallback. Configure concrete model fields,
+    ending with a non-nullable, unique field. Signatures protect integrity, not
+    confidentiality.
+    """
+
+    ordering = ("pk",)
+    page_size_query_param = "page-size"
+    max_page_size = 100
+    cursor_salt = "app_base.CursorPaginator"
+    cursor_version = 1
+
+    def __init__(
+        self, page_size=10, is_authenticated=False, max_page_size=100, ordering=None,
+    ):
+        self.page_size = page_size or 1
+        self.allow_page_size = is_authenticated
+        self.max_page_size = max_page_size
+        if ordering is not None:
+            self.ordering = ordering
+
+    def get_page_size(self, request):
+        if not self.allow_page_size:
+            return self.page_size
+        return super().get_page_size(request)
+
+    def _context(self, request):
+        filters = sorted(
+            (key, values) for key, values in request.query_params.lists()
+            if key not in {self.cursor_query_param, self.page_size_query_param}
+        )
+        return {
+            "path": request.path,
+            "ordering": list(self.ordering),
+            "filters": hashlib.sha256(json.dumps(filters).encode()).hexdigest(),
+        }
+
+    def _get_position_from_instance(self, instance, ordering):
+        values = []
+        for field in self.ordering_fields:
+            value = (
+                instance[field.attname] if isinstance(instance, dict)
+                else getattr(instance, field.attname)
+            )
+            values.append(None if value is None else str(value))
+        return json.dumps(values, separators=(",", ":"))
+
+    def _position_values(self, position):
+        values = json.loads(position)
+        if not isinstance(values, list) or len(values) != len(self.ordering_fields):
+            raise ValueError("Invalid composite position")
+        converted = []
+        for field, value in zip(self.ordering_fields, values):
+            if value is None:
+                if not field.null:
+                    raise ValueError("Null position for a required field")
+            elif not isinstance(value, str):
+                raise ValueError("Invalid position value")
+            converted.append(field.to_python(value))
+        return converted
+
+    def encode_cursor(self, cursor):
+        payload = {
+            "version": self.cursor_version,
+            "position": json.loads(cursor.position),
+            "reverse": cursor.reverse,
+            "context": self._context(self.request),
+        }
+        encoded = signing.dumps(payload, salt=self.cursor_salt)
+        return replace_query_param(self.base_url, self.cursor_query_param, encoded)
+
+    def decode_cursor(self, request):
+        encoded = request.query_params.get(self.cursor_query_param)
+        if encoded is None:
+            return None
+        try:
+            payload = signing.loads(encoded, salt=self.cursor_salt)
+            if (
+                not isinstance(payload, dict)
+                or type(payload.get("version")) is not int
+                or payload.get("version") != self.cursor_version
+                or payload.get("context") != self._context(request)
+                or type(payload.get("reverse")) is not bool
+            ):
+                raise ValueError("Incompatible cursor")
+            position = json.dumps(payload["position"], separators=(",", ":"))
+            self._position_values(position)
+        except (
+            signing.BadSignature, DjangoValidationError, KeyError,
+            TypeError, ValueError, OverflowError,
+        ):
+            raise ValidationError({"cursor": [self.invalid_cursor_message]}) from None
+        return pagination.Cursor(offset=0, reverse=payload["reverse"], position=position)
+
+    def _position_filter(self, position, reverse=False):
+        """Compare tuples lexicographically, including their null partitions."""
+        predicate = Q(pk__in=[])
+        prefix = Q()
+        for order, field, value in zip(
+            self.ordering, self.ordering_fields, self._position_values(position),
+        ):
+            name = field.attname
+            if value is None:
+                comparison = Q(**{name + "__isnull": False}) if reverse else Q(pk__in=[])
+            else:
+                less_than = order.startswith("-") != reverse
+                lookup = "__lt" if less_than else "__gt"
+                comparison = Q(**{name + lookup: value})
+                if not reverse and field.null:
+                    comparison |= Q(**{name + "__isnull": True})
+            predicate |= prefix & comparison
+            prefix &= Q(**{name: value})
+        return predicate
+
+    def _can_use_tuple_seek(self):
+        """Return whether PostgreSQL can seek on one homogeneous B-tree tuple."""
+        if len({order.startswith("-") for order in self.ordering}) != 1:
+            return False
+        nullable_fields = [
+            index for index, field in enumerate(self.ordering_fields) if field.null
+        ]
+        return not nullable_fields or nullable_fields == [0]
+
+    def _tuple_comparison(self, fields, values, reverse):
+        """Build a strict composite comparison matching the active scan direction."""
+        descending = self.ordering[0].startswith("-") != reverse
+        lookup = LessThan if descending else GreaterThan
+        left = [F(field.attname) for field in fields]
+        right = [Value(value, output_field=field) for field, value in zip(fields, values)]
+        if len(fields) == 1:
+            return lookup(left[0], right[0])
+        return lookup(
+            Func(*left, function="ROW", output_field=Field()),
+            Func(*right, function="ROW", output_field=Field()),
+        )
+
+    def _ordered_queryset(self, queryset, reverse=False, start=0, explicit_nulls=True):
+        ordering = []
+        for order, field in zip(self.ordering[start:], self.ordering_fields[start:]):
+            expression = F(field.attname)
+            descending = order.startswith("-") != reverse
+            if explicit_nulls and field.null:
+                nulls = {"nulls_first": True} if reverse else {"nulls_last": True}
+                ordering.append(
+                    expression.desc(**nulls) if descending else expression.asc(**nulls)
+                )
+            else:
+                ordering.append(expression.desc() if descending else expression.asc())
+        return queryset.order_by(*ordering)
+
+    def _tuple_seek_querysets(self, queryset, position, reverse):
+        values = self._position_values(position) if position is not None else None
+        nullable_fields = [
+            index for index, field in enumerate(self.ordering_fields) if field.null
+        ]
+        if not nullable_fields:
+            selection = queryset
+            if values is not None:
+                selection = selection.filter(
+                    self._tuple_comparison(self.ordering_fields, values, reverse)
+                )
+            return [self._ordered_queryset(selection, reverse, explicit_nulls=False)]
+
+        nullable_field = self.ordering_fields[0]
+        known = queryset.filter(**{nullable_field.attname + "__isnull": False})
+        nulls = queryset.filter(**{nullable_field.attname + "__isnull": True})
+        known = self._ordered_queryset(known, reverse, explicit_nulls=False)
+        nulls = self._ordered_queryset(
+            nulls, reverse, start=1, explicit_nulls=False,
+        )
+
+        if values is None:
+            return [known, nulls]
+        if values[0] is None:
+            nulls = nulls.filter(
+                self._tuple_comparison(
+                    self.ordering_fields[1:], values[1:], reverse,
+                )
+            )
+            return [nulls, known] if reverse else [nulls]
+
+        known = known.filter(
+            self._tuple_comparison(self.ordering_fields, values, reverse)
+        )
+        return [known] if reverse else [known, nulls]
+
+    def _candidate_querysets(self, queryset, position, reverse):
+        if self._can_use_tuple_seek():
+            return self._tuple_seek_querysets(queryset, position, reverse)
+
+        selection = queryset
+        if position is not None:
+            selection = selection.filter(self._position_filter(position, reverse))
+        return [self._ordered_queryset(selection, reverse)]
+
+    @staticmethod
+    def _fetch_candidates(querysets, limit):
+        results = []
+        for queryset in querysets:
+            remaining = limit - len(results)
+            if remaining <= 0:
+                break
+            results.extend(list(queryset[:remaining]))
+        return results
+
+    @staticmethod
+    def _has_candidates(querysets):
+        return any(queryset.exists() for queryset in querysets)
+
+    def _get_ordering_fields(self, queryset):
+        # Subclasses can describe annotated ordering fields absent from the model.
+        # These field types decode cursor values; the default uses model fields.
+        return [
+            queryset.model._meta.pk if order.lstrip("-") == "pk"
+            else queryset.model._meta.get_field(order.lstrip("-"))
+            for order in self.ordering
+        ]
+
+    def paginate_queryset(self, queryset, request, view=None):
+        if "page" in request.query_params:
+            raise ValidationError({
+                "page": ["Use 'cursor' or follow the next/previous links instead of 'page'."],
+            })
+        self.request = request
+        self.base_url = request.build_absolute_uri()
+        self.page_size = self.get_page_size(request)
+        self.ordering = self.get_ordering(request, queryset, view)
+        self.ordering_fields = self._get_ordering_fields(queryset)
+        if not self.ordering_fields[-1].unique or self.ordering_fields[-1].null:
+            raise ValueError("Cursor ordering must end in a unique, non-nullable field")
+        self.cursor = self.decode_cursor(request)
+        reverse = self.cursor.reverse if self.cursor else False
+        position = self.cursor.position if self.cursor else None
+        results = self._fetch_candidates(
+            self._candidate_querysets(queryset, position, reverse),
+            self.page_size + 1,
+        )
+        has_more = len(results) > self.page_size
+        self.page = results[:self.page_size]
+        following = self._get_position_from_instance(results[-1], self.ordering) if has_more else None
+        if reverse:
+            self.page.reverse()
+            self.has_previous = has_more
+            self.previous_position = following
+            boundary = (
+                self._get_position_from_instance(self.page[-1], self.ordering)
+                if self.page else position
+            )
+            self.has_next = self._has_candidates(
+                self._candidate_querysets(queryset, boundary, False)
+            )
+            self.next_position = position
+        else:
+            self.has_next = has_more
+            self.next_position = following
+            boundary = (
+                self._get_position_from_instance(self.page[0], self.ordering)
+                if self.page else position
+            )
+            self.has_previous = bool(self.cursor) and self._has_candidates(
+                self._candidate_querysets(queryset, boundary, True)
+            )
+            self.previous_position = position
+        self.display_page_controls = self.has_next or self.has_previous
+        return self.page
+
+    def get_paginated_response(self, data, token=None):
+        response = super().get_paginated_response(data)
+        response.data["token"] = token
+        return response
+
+    def get_paginated_response_schema(self, schema):
+        response_schema = super().get_paginated_response_schema(schema)
+        response_schema["properties"]["token"] = {"type": "string", "nullable": True}
+        response_schema["required"] = [*response_schema["required"], "token"]
+        return response_schema
 
 
 class LoggedValidationError(ValidationError):
@@ -241,11 +547,13 @@ def parse_request_data(
 def manage_crud_request(
     request: request.Request,
     crud_action: str,
-    ModelSerializerClass: serializers.ModelSerializer,
+    ModelSerializerClass: type[serializers.BaseSerializer],
     item_pk: uuid.UUID | str = None,
     extra_args: dict = {},
     to_log_query: bool = True,
-    hide_data_in_query: bool = False
+    hide_data_in_query: bool = False,
+    model_queryset: QuerySet | None = None,
+    success_status_code: int | None = None,
 ):
     """ Manage CRUD generic requests `["create", "update", "destroy"]` for a Model.
     This function will extract the data from the request, log it (by creating a 
@@ -263,8 +571,9 @@ def manage_crud_request(
     crud_action: str
         CRUD action to perform. Available: "create", "update", "destroy".
 
-    ModelSerializerClass: rest_framework.serializers.ModelSerializer
-        Serializer to use for validate and clean the data and extract the Model.
+    ModelSerializerClass: rest_framework.serializers.BaseSerializer class
+        Serializer to validate the request. Its ``Meta.model`` identifies the
+        model and its ``create``/``update`` methods perform the write.
 
     item_pk: uuid.UUID | str, default=None
         Primary key of the Model to be updated/deleted. 
@@ -281,16 +590,23 @@ def manage_crud_request(
         If True, the data will be hidden in the Query item. If False, the data will
         be logged in the Query item.
 
+    model_queryset: django.db.models.QuerySet, default=None
+        Optional restricted queryset used to look up objects for update/delete.
+        If omitted, lookups continue to use ``Meta.model.objects``.
+
+    success_status_code: int, default=None
+        Optional status override for a successful create/update response. If
+        omitted, create returns 201 and update returns 200.
+
     Returns
     -------
     Response: rest_framework.response.Response
-        A response using the GenericResponseSerializer data structure.
-        Responses:
-            - Status code: 201 | Body `results`: The created item.
-            - Status code: 200 | Body `results`: The updated item.
-            - Status code: 204 | Body `results`: None.
-            - Status code: 400 | Body `results`: The errors.
-            - Status code: 404 | Body `results`: None.
+        A successful create/update response has the following structure::
+
+            {"token": "...", "result": {"...": "..."}}
+
+        Delete and error responses retain the GenericResponseSerializer data
+        structure used by the rest of the project.
     Raises
     ------
     NotImplementedError
@@ -299,6 +615,9 @@ def manage_crud_request(
     
     # First of all get Model 
     ModelClass = ModelSerializerClass.Meta.model
+    lookup_queryset = (
+        model_queryset if model_queryset is not None else ModelClass.objects.all()
+    )
 
     list_params = [
         name 
@@ -315,7 +634,15 @@ def manage_crud_request(
 
     try:
         if crud_action in ["create", "update"]:
-            item = ModelClass.objects.get(pk=item_pk) if item_pk else None
+            if item_pk:
+                try:
+                    item = lookup_queryset.get(pk=item_pk)
+                except (TypeError, ValueError) as e:
+                    if model_queryset is None:
+                        raise
+                    raise ModelClass.DoesNotExist from e
+            else:
+                item = None
             # Serialize and validate the data
             serializer = ModelSerializerClass(
                 data=data, 
@@ -332,19 +659,35 @@ def manage_crud_request(
                 if crud_action == "create" 
                 else serializer.update(item, serializer.validated_data)
             )
-            return create_paginate_response(
+            result = ModelSerializerClass(
+                instance=item,
+                context={"request": request},
+            ).data
+            response = create_result_response(
                 token=token,
-                queryset=[item], 
-                request=request,
-                serializer_class=ModelSerializerClass,
+                result=result,
+                status_code=status.HTTP_201_CREATED
+                if crud_action == "create"
+                else status.HTTP_200_OK,
             )
+            if success_status_code is not None:
+                response.status_code = success_status_code
+            return response
         elif crud_action == "destroy":
             # Return 204 No Content regardless of whether the resource existed or not.
             # The state of the server resource is the same after the DELETE request.
             # Then, use filter to don't raise a DoesNotExist exception.
-            item = ModelClass.objects.filter(pk=item_pk).first()
+            try:
+                item = lookup_queryset.filter(pk=item_pk).first()
+            except (TypeError, ValueError):
+                if model_queryset is None:
+                    raise
+                item = None
             if item:
                 item.delete()
+            elif model_queryset is not None:
+                # A scoped API treats unknown and out-of-scope rows alike.
+                raise ModelClass.DoesNotExist
             return create_message(
                 token, 
                 status.HTTP_204_NO_CONTENT, 
@@ -472,24 +815,23 @@ def log_query(
 
 def get_loc(request: request.Request):
     """Get request's location from its IP address."""
-
-    g = GeoIP2("data/geoip")
     if "HTTP_X_FORWARDED_FOR" in request.META:
         x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
         ip = x_forwarded_for.split(",")[0]
     else:
         ip = request.META.get("REMOTE_ADDR")
-    if ip != "127.0.0.1":
-        try:
-            location = g.country(ip)["country_code"]
-        except Exception as e:
-            logger.warning(
-                f"{e.__class__.__name__}: Unable to get the location from the ip '{ip}'."
-            )
-            location = "unknown"
+
     if ip == "127.0.0.1":
-        location = "localhost"
-    return location
+        return "localhost"
+
+    try:
+        g = GeoIP2("data/geoip")
+        return g.country(ip)["country_code"]
+    except Exception as e:
+        logger.warning(
+            f"{e.__class__.__name__}: Unable to get the location from the ip '{ip}'."
+        )
+        return "unknown"
 
 
 def create_message(
@@ -556,13 +898,29 @@ def create_message(
     return Response(serializer.data, status=status_code)
 
 
+def create_result_response(
+    token: str | uuid.UUID,
+    result: dict,
+    status_code: int = status.HTTP_200_OK,
+):
+    """Return the standard successful response for one serialized resource."""
+
+    serializer = GenericResultResponseSerializer(
+        {"token": token, "result": result}
+    )
+    return Response(serializer.data, status=status_code)
+
+
 def create_paginate_response(
     token: str | uuid.UUID,
     queryset: Iterable[object],
     request: request.Request,
     serializer_class: serializers.BaseSerializer,
     many: bool = True,
-    max_items_page: int = 10
+    max_items_page: int = 10,
+    serializer_context: dict | None = None,
+    pagination_class: type[pagination.BasePagination] = BasePaginator,
+    pagination_kwargs: dict | None = None,
 ):
     """ Paginate response
 
@@ -590,14 +948,21 @@ def create_paginate_response(
             such as splitting strings into individual characters.
 
     max_items_page: int, default=10
-        Max number of items to be returned by each page.
+        Default number of items to be returned by each page.
+
+    pagination_class: type, default=BasePaginator
+        Paginator accepting page_size and is_authenticated, and returning a trace token.
+
+    pagination_kwargs: dict, optional
+        Additional paginator configuration, such as composite cursor ordering.
     """
     # Finally, the response is sent with pagination
-    paginator = BasePaginator(
+    paginator = pagination_class(
         page_size=max_items_page, 
-        is_authenticated=request.user.is_authenticated
+        is_authenticated=request.user.is_authenticated,
+        **(pagination_kwargs or {}),
     )
     page = paginator.paginate_queryset(queryset, request)
-    serializer = serializer_class(page, many=many)
+    serializer = serializer_class(page, many=many, context=serializer_context or {})
 
     return paginator.get_paginated_response(data=serializer.data, token=token)

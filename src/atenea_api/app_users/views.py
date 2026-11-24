@@ -3,7 +3,10 @@ from drf_spectacular.utils import extend_schema, OpenApiResponse
 from rest_framework.permissions import AllowAny
 from rest_framework.decorators import action
 from app_users.serializers import UserSerializer
-from app_base.serializers import GenericResponseSerializer
+from app_base.serializers import (
+    GenericResponseSerializer,
+    GenericResultResponseSerializer,
+)
 from app_base.views import (
     manage_crud_request,
     create_message,
@@ -28,7 +31,7 @@ class UserAuthView(viewsets.ViewSet):
         request=UserSerializer,
         responses={
             status.HTTP_201_CREATED: OpenApiResponse(
-                response=UserSerializer(),
+                response=GenericResultResponseSerializer,
                 description="The created user."
             ),
             status.HTTP_400_BAD_REQUEST: OpenApiResponse(

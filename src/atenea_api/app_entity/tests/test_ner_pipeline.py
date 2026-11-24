@@ -3,7 +3,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app_entity.models import AnnotatedEntity, EntityItem
-from app_entity.services.ner import call_ner_service, ner_db_store, ner_extraction
+from app_entity.enums import EntityType
+from app_entity.services.ner import (
+    NerExtractionError,
+    call_ner_service,
+    extract_ner_data,
+    store_ner_results,
+)
 
 
 def test_call_ner_service_builds_language_payloads_in_order():
@@ -80,6 +86,24 @@ def test_call_ner_service_skips_empty_texts_without_rejecting_the_batch():
     ]
 
 
+def test_strict_extraction_rejects_partial_ner_responses():
+    with patch(
+        "app_entity.services.ner.call_ner_service",
+        new=AsyncMock(return_value=[{"id": "first", "entities": []}]),
+    ):
+        with pytest.raises(NerExtractionError, match="partial response"):
+            extract_ner_data(
+                {
+                    "en": [
+                        {"pk": "first", "text": "London"},
+                        {"pk": "second", "text": "Madrid"},
+                    ]
+                },
+                available_lang=["en"],
+                strict=True,
+            )
+
+
 @pytest.mark.django_db
 def test_ner_extraction_combines_custom_and_service_entities(message_factory):
     message = message_factory(text="Contact @alice in Madrid", lang="en")
@@ -96,9 +120,10 @@ def test_ner_extraction_combines_custom_and_service_entities(message_factory):
         "app_entity.services.ner.call_ner_service",
         new=AsyncMock(return_value=service_result),
     ):
-        entities, annotations, item_pks = ner_extraction(
+        entities, annotations, item_pks = extract_ner_data(
             {"en": [{"pk": message.pk, "text": message.text}]},
             available_lang=["en"],
+            strict=True,
         )
 
     unique_entities = {entity["unique_ent"] for entity in entities}
@@ -109,7 +134,7 @@ def test_ner_extraction_combines_custom_and_service_entities(message_factory):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_ner_db_store_persists_misc_entities(message_factory):
+def test_store_ner_results_persists_misc_entities(message_factory):
     message = message_factory(text="Project Atenea")
     payload = (
         [{"name": "Atenea", "unique_ent": "atenea_misc", "type": "MISC"}],
@@ -121,10 +146,11 @@ def test_ner_db_store_persists_misc_entities(message_factory):
         [message.pk],
     )
 
-    ner_db_store(payload, "MessageItem", "app_telegram")
+    store_ner_results(payload, "MessageItem", "app_telegram")
 
     entity_item = EntityItem.objects.get(unique_ent="atenea_misc")
-    assert entity_item.type == EntityItem.MISC
+    assert entity_item.type == EntityType.MISC
+    assert entity_item.type_name == EntityItem.MISC
     assert AnnotatedEntity.objects.filter(
         entity=entity_item,
         object_id=message.pk,
@@ -132,7 +158,7 @@ def test_ner_db_store_persists_misc_entities(message_factory):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_ner_db_store_is_idempotent_for_same_annotation(message_factory):
+def test_store_ner_results_is_idempotent_for_same_annotation(message_factory):
     message = message_factory(text="Madrid")
     payload = (
         [{"name": "Madrid", "unique_ent": "madrid_gpe", "type": "GPE"}],
@@ -144,9 +170,35 @@ def test_ner_db_store_is_idempotent_for_same_annotation(message_factory):
         [message.pk],
     )
 
-    first = ner_db_store(payload, "MessageItem", "app_telegram")
-    second = ner_db_store(payload, "MessageItem", "app_telegram")
+    first = store_ner_results(payload, "MessageItem", "app_telegram")
+    second = store_ner_results(payload, "MessageItem", "app_telegram")
 
     assert first == second
     assert EntityItem.objects.filter(unique_ent="madrid_gpe").count() == 1
     assert AnnotatedEntity.objects.filter(object_id=message.pk).count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_reprocess_storage_replaces_existing_message_annotations(message_factory):
+    message = message_factory(text="Madrid and London")
+    old_payload = (
+        [{"name": "Madrid", "unique_ent": "madrid_gpe", "type": "GPE"}],
+        {"madrid_gpe": [{"item_pk": message.pk, "start_offset": 0, "end_offset": 6}]},
+        [message.pk],
+    )
+    new_payload = (
+        [{"name": "London", "unique_ent": "london_gpe", "type": "GPE"}],
+        {"london_gpe": [{"item_pk": message.pk, "start_offset": 11, "end_offset": 17}]},
+        [message.pk],
+    )
+
+    store_ner_results(old_payload, "MessageItem", "app_telegram")
+    store_ner_results(
+        new_payload,
+        "MessageItem",
+        "app_telegram",
+        replace_message_ids=[message.pk],
+    )
+
+    annotations = AnnotatedEntity.objects.filter(object_id=message.pk).select_related("entity")
+    assert list(annotations.values_list("entity__unique_ent", flat=True)) == ["london_gpe"]

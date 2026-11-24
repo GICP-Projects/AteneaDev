@@ -1,0 +1,50 @@
+{% extends "app_dashboard/base.html" %}
+{% load i18n %}
+{% block title %}{% translate "Schedules" %}{% endblock %}
+{% block content %}
+<div class="page-heading">
+    <div><p class="eyebrow">{% translate "Automation" %}</p><h1>{% translate "Schedules" %}</h1><p class="muted">{% translate "Control when registered operations are launched." %}</p></div>
+    <a class="button button-primary" href="{% url 'app_dashboard:schedule-new' %}">{% translate "New schedule" %}</a>
+</div>
+{% if schedules %}
+<section class="schedule-list" aria-label="{% translate 'Schedule list' %}">
+    {% for schedule in schedules %}
+    <article class="schedule-card">
+        <div class="schedule-heading">
+            <div><h2>{{ schedule.name }}</h2><p class="muted">{{ schedule.pipeline }}</p></div>
+            <form class="schedule-toggle-form" method="post" action="{% url 'app_dashboard:schedule-toggle' schedule.id %}" aria-label="{% translate 'Change schedule status' %}">
+                {% csrf_token %}
+                <input
+                    id="schedule-enabled-{{ schedule.id }}"
+                    class="toggle-input"
+                    type="checkbox"
+                    name="enabled"
+                    value="1"
+                    data-schedule-toggle
+                    aria-label="{% if schedule.enabled %}{% translate 'Disable schedule' %}{% else %}{% translate 'Enable schedule' %}{% endif %}"
+                    {% if schedule.enabled %}checked{% endif %}
+                >
+                <label class="toggle-switch" for="schedule-enabled-{{ schedule.id }}">
+                    <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+                </label>
+                <span class="schedule-toggle-status" aria-live="polite">{% if schedule.enabled %}{% translate "Enabled" %}{% else %}{% translate "Disabled" %}{% endif %}</span>
+            </form>
+        </div>
+        {% if schedule.description %}<p>{{ schedule.description }}</p>{% endif %}
+        <dl class="compact-stats">
+            <div><dt>{% translate "Schedule type" %}</dt><dd>{{ schedule.schedule_kind }}</dd></div>
+            <div><dt>{% translate "Frequency" %}</dt><dd>{{ schedule.schedule_detail }}</dd></div>
+            <div><dt>{% translate "Runs" %}</dt><dd>{{ schedule.total_run_count }}</dd></div>
+            <div><dt>{% translate "Last run" %}</dt><dd>{% if schedule.last_run_at %}{{ schedule.last_run_at|date:"d/m/Y H:i" }}{% else %}{% translate "Never" %}{% endif %}</dd></div>
+        </dl>
+        <div class="schedule-actions">
+            <a class="button" href="{% url 'app_dashboard:schedule-edit' schedule.id %}">{% translate "Edit" %}</a>
+            <form method="post" action="{% url 'app_dashboard:schedule-delete' schedule.id %}" data-confirm="{% translate 'Delete this schedule?' %}">{% csrf_token %}<button class="button button-danger" type="submit">{% translate "Delete" %}</button></form>
+        </div>
+    </article>
+    {% endfor %}
+</section>
+{% else %}
+<div class="empty-state"><h2>{% translate "No schedules" %}</h2><p>{% translate "Create one to launch a registered operation automatically." %}</p><a class="button button-primary" href="{% url 'app_dashboard:schedule-new' %}">{% translate "Create schedule" %}</a></div>
+{% endif %}
+{% endblock %}

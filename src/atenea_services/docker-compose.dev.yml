@@ -1,0 +1,12 @@
+services:
+  ner-api:
+    build:
+      context: ./api_ner
+
+  sentiment-api-gpu1:
+    build:
+      context: ./api_sentiment
+
+  sentiment-api-gpu2:
+    build:
+      context: ./api_sentiment

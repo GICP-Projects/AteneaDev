@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from telethon.tl.types import MessageReplyStoryHeader, PeerChannel
 
 from app_base.models import QueryItem
 from app_telegram.models import MessageItem
@@ -102,6 +103,7 @@ def test_extract_msgs_builds_message_and_advances_room_offset(room_factory):
     assert message.media_type == MessageItem.TEXT
     assert message.annotated_text == "Hello world"
     assert message.lang == "en"
+    assert message.ner_input_hash
 
 
 @pytest.mark.django_db
@@ -137,9 +139,12 @@ def test_extract_msgs_ignores_telegram_action_messages(room_factory):
     )
 
     assert messages == []
-    assert updated_room is None
+    # Telegram action records create no MessageItem, but the request itself
+    # finished normally and must count as a completed room scan.
+    assert updated_room is room
     assert updated_parent is None
     assert room.last_offset == 0
+    assert room.last_scan_at is not None
 
 
 @pytest.mark.django_db
@@ -165,7 +170,34 @@ def test_extract_msgs_builds_comment_link_and_updates_parent(room_factory, messa
     assert updated_parent is parent
     assert parent.last_offset == 201
     assert messages[0].link == "https://t.me/test_room/10?comment=201"
+    assert messages[0].reply_to_id == 10
     assert messages[0].reply_to_msg is parent
+
+
+@pytest.mark.django_db
+def test_extract_msgs_handles_story_reply_header(room_factory):
+    room = room_factory(access_hash=123)
+    client = FakeTelegramClient()
+    client.messages = [
+        telegram_message(
+            msg_id=202,
+            text="A story reply",
+            is_reply=True,
+            reply_to=MessageReplyStoryHeader(peer=PeerChannel(456), story_id=7),
+        )
+    ]
+
+    with patch("app_telegram.services.telegram.detect_lang", return_value="en"):
+        messages, updated_room, updated_parent = asyncio.run(
+            extract_msgs(client, room, max_msgs=100)
+        )
+
+    assert updated_room is room
+    assert updated_parent is None
+    assert room.last_offset == 202
+    assert messages[0].is_reply is True
+    assert messages[0].reply_to_id is None
+    assert messages[0].reply_to_msg is None
 
 
 class FakePrivateError(Exception):
@@ -259,11 +291,9 @@ def test_scan_comments_persists_reply_and_updates_parent(
         patch("app_telegram.services.telegram.detect_lang", return_value="en"),
     ):
         message_pks = scan_comments(
-            [room.pk],
+            [parent.pk],
             auth_data,
-            message_filters={"and_filter_fields": {"is_reply": False}},
             max_msgs=100,
-            total_msgs=10000,
         )
 
     parent.refresh_from_db()
@@ -272,4 +302,3 @@ def test_scan_comments_persists_reply_and_updates_parent(
     assert reply.link == "https://t.me/test_room/10?comment=401"
     assert parent.last_offset == 401
     assert parent.last_scan_at is not None
-

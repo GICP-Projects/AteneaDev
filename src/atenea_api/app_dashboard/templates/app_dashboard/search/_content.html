@@ -1,0 +1,223 @@
+{% load i18n %}
+{% translate "Rooms" as search_rooms_label %}
+{% translate "Tags" as search_tags_label %}
+{% url 'app_dashboard:lookup' kind='rooms' as search_room_lookup_url %}
+{% url 'app_dashboard:lookup' kind='tags' as search_tag_lookup_url %}
+<section
+    id="message-search-content"
+    class="message-search-page{% if search_submitted %} message-search-page--results{% endif %}"
+    data-search-results="{{ search_submitted|yesno:'true,false' }}"
+    data-search-mode="{{ form_values.mode }}"
+    data-search-loaded-count="{{ search_loaded_count }}"
+    data-search-total-count="{{ search_total_count|default_if_none:'' }}"
+    data-search-count-url="{% url 'app_dashboard:search-count' %}"
+>
+    <form method="get" action="{% url 'app_dashboard:search' %}" class="message-search-form" role="search" data-message-search-form>
+        <input type="hidden" name="search" value="1">
+        <input type="hidden" name="mode" value="{{ form_values.mode }}" data-search-mode-value>
+        <input type="hidden" name="ordering" value="{{ form_values.ordering }}" data-search-ordering>
+        <div class="message-search-layout">
+            <aside class="message-search-sidebar" data-search-sidebar aria-labelledby="message-search-filter-heading">
+                <div class="message-search-sidebar-heading">
+                    <h2 id="message-search-filter-heading">{% translate "Advanced filters" %}</h2>
+                    <button
+                        type="button"
+                        class="icon-button message-search-sidebar-toggle"
+                        data-search-sidebar-toggle
+                        data-expand-label="{% translate 'Expand filters' %}"
+                        data-collapse-label="{% translate 'Collapse filters' %}"
+                        aria-label="{% translate 'Collapse filters' %}"
+                        aria-expanded="true"
+                        aria-controls="message-search-sidebar-content"
+                        title="{% translate 'Collapse filters' %}"
+                    >
+                        <svg class="message-search-sidebar-toggle-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m14 5-7 7 7 7"></path></svg>
+                    </button>
+                </div>
+                <div id="message-search-sidebar-content" class="message-search-sidebar-content" data-search-sidebar-content>
+                <div class="message-search-mode-fields" data-search-mode-fields="retrieval"{% if form_values.mode != "retrieval" %} hidden{% endif %}>
+                    {% for entity_id in search_entity_filters %}<input type="hidden" name="entity" value="{{ entity_id }}"{% if form_values.mode != "retrieval" %} disabled{% endif %}>{% endfor %}
+                    {% if search_entity_filters %}<p class="message-search-filter-help">{% translate "Filtered by the entity selected in analytics." %} <a href="{{ search_entity_clear_url }}">{% translate "Clear" %}</a></p>{% endif %}
+                    <div class="message-search-filter-grid">
+                        <div class="message-search-autocomplete-field">
+                            {% include "app_dashboard/components/autocomplete_list.html" with autocomplete_id="search-retrieval-room" autocomplete_name="room" autocomplete_value=form_values.room autocomplete_label=search_rooms_label autocomplete_kind="rooms" autocomplete_url=search_room_lookup_url autocomplete_mode="retrieval" %}
+                        </div>
+                        <div class="message-search-autocomplete-field">
+                            {% include "app_dashboard/components/autocomplete_list.html" with autocomplete_id="search-retrieval-tag" autocomplete_name="tag" autocomplete_value=form_values.tag autocomplete_label=search_tags_label autocomplete_kind="tags" autocomplete_url=search_tag_lookup_url autocomplete_mode="retrieval" %}
+                        </div>
+                        <label>
+                            <span>{% translate "Tag matching" %}</span>
+                            <select name="tag_match"{% if form_values.mode != "retrieval" %} disabled{% endif %}>
+                                <option value="any"{% if form_values.tag_match == "any" %} selected{% endif %}>{% translate "Any tag" %}</option>
+                                <option value="all"{% if form_values.tag_match == "all" %} selected{% endif %}>{% translate "All tags" %}</option>
+                            </select>
+                        </label>
+                        <label>
+                            <span>{% translate "Replies" %}</span>
+                            <select name="is_reply"{% if form_values.mode != "retrieval" %} disabled{% endif %}>
+                                <option value=""{% if not form_values.is_reply %} selected{% endif %}>{% translate "All messages" %}</option>
+                                <option value="true"{% if form_values.is_reply == "true" %} selected{% endif %}>{% translate "Replies only" %}</option>
+                                <option value="false"{% if form_values.is_reply == "false" %} selected{% endif %}>{% translate "Exclude replies" %}</option>
+                            </select>
+                        </label>
+                        <label>
+                            <span>{% translate "Created from" %}</span>
+                            <input type="date" name="createdat_min" value="{{ form_values.createdat_min }}"{% if form_values.mode != "retrieval" %} disabled{% endif %}>
+                        </label>
+                        <label>
+                            <span>{% translate "Created until" %}</span>
+                            <input type="date" name="createdat_max" value="{{ form_values.createdat_max }}"{% if form_values.mode != "retrieval" %} disabled{% endif %}>
+                        </label>
+                        <label>
+                            <span>{% translate "Stored since" %}</span>
+                            <input type="date" name="stored_since" value="{{ form_values.stored_since }}"{% if form_values.mode != "retrieval" %} disabled{% endif %}>
+                        </label>
+                    </div>
+                    <p class="message-search-filter-help">{% translate "Search rooms and tags, or press Enter to add a value." %}</p>
+                </div>
+
+                <div class="message-search-mode-fields" data-search-mode-fields="elasticsearch"{% if form_values.mode != "elasticsearch" %} hidden{% endif %}>
+                    <div class="message-search-filter-grid">
+                        <div class="message-search-autocomplete-field">
+                            {% include "app_dashboard/components/autocomplete_list.html" with autocomplete_id="search-elasticsearch-room" autocomplete_name="room_name__terms" autocomplete_value=form_values.es_room_names autocomplete_value_separator="__" autocomplete_label=search_rooms_label autocomplete_kind="rooms" autocomplete_url=search_room_lookup_url autocomplete_mode="elasticsearch" %}
+                        </div>
+                        <div class="message-search-autocomplete-field">
+                            {% include "app_dashboard/components/autocomplete_list.html" with autocomplete_id="search-elasticsearch-tag" autocomplete_name="tag__terms" autocomplete_value=form_values.es_tags autocomplete_value_separator="__" autocomplete_label=search_tags_label autocomplete_kind="tags" autocomplete_url=search_tag_lookup_url autocomplete_mode="elasticsearch" %}
+                        </div>
+                        <label>
+                            <span>{% translate "Entities" %}</span>
+                            <input type="text" name="entity__terms" value="{{ form_values.es_entities }}" placeholder="{% translate 'Use double underscores between entities' %}"{% if form_values.mode != "elasticsearch" %} disabled{% endif %}>
+                        </label>
+                        <label>
+                            <span>{% translate "Language" %}</span>
+                            <input type="text" name="lang" value="{{ form_values.es_lang }}" placeholder="es"{% if form_values.mode != "elasticsearch" %} disabled{% endif %}>
+                        </label>
+                        <div class="message-search-media-filter">
+                            <span class="message-search-media-label">{% translate "Media types" %}</span>
+                            <details class="message-search-media-dropdown" data-media-type-dropdown data-all-label="{% translate 'All media types' %}">
+                                <summary><span data-media-type-summary>{{ form_values.es_media_types_label }}</span></summary>
+                                <div class="message-search-media-options">
+                                    {% for value, label in media_type_choices %}
+                                    <label class="message-search-media-option">
+                                        <input type="checkbox" value="{{ value }}" data-media-type-option{% if value in form_values.es_media_types_selected %} checked{% endif %}{% if form_values.mode != "elasticsearch" %} disabled{% endif %}>
+                                        <span>{{ label }}</span>
+                                    </label>
+                                    {% endfor %}
+                                </div>
+                            </details>
+                            <input type="hidden" name="media_type__terms" value="{{ form_values.es_media_types }}" data-media-type-value{% if form_values.mode != "elasticsearch" %} disabled{% endif %}>
+                        </div>
+                        <label>
+                            <span>{% translate "Replies" %}</span>
+                            <select name="is_reply"{% if form_values.mode != "elasticsearch" %} disabled{% endif %}>
+                                <option value=""{% if not form_values.es_is_reply %} selected{% endif %}>{% translate "All messages" %}</option>
+                                <option value="true"{% if form_values.es_is_reply == "true" %} selected{% endif %}>{% translate "Replies only" %}</option>
+                                <option value="false"{% if form_values.es_is_reply == "false" %} selected{% endif %}>{% translate "Exclude replies" %}</option>
+                            </select>
+                        </label>
+                        <label>
+                            <span>{% translate "Created from" %}</span>
+                            <input type="date" name="created_at__gte" value="{{ form_values.es_created_from }}"{% if form_values.mode != "elasticsearch" %} disabled{% endif %}>
+                        </label>
+                        <label>
+                            <span>{% translate "Created until" %}</span>
+                            <input type="date" name="created_at__lte" value="{{ form_values.es_created_until }}"{% if form_values.mode != "elasticsearch" %} disabled{% endif %}>
+                        </label>
+                    </div>
+                    <p class="message-search-filter-help">{% translate "Use double underscores between multiple filter values." %}</p>
+                </div>
+                </div>
+            </aside>
+
+            <div class="message-search-main">
+                <div class="message-search-toolbar">
+                    <div class="message-search-hero">
+                        <div class="message-search-box">
+                            <div class="message-search-mode-control">
+                                <svg class="message-search-mode-icon" viewBox="0 0 24 24" role="img" aria-label="{% translate 'Text mode' %}" title="{% translate 'Text mode' %}" focusable="false">
+                                    <title>{% translate "Text mode" %}</title>
+                                    <path d="M4 6h16M4 10h16M4 14h11M4 18h8"></path>
+                                </svg>
+                                <input id="message-search-text-mode" class="toggle-input" type="checkbox" role="switch" aria-label="{% translate 'Text mode' %}" data-search-mode-toggle{% if form_values.mode == "elasticsearch" %} checked{% endif %}>
+                                <label class="toggle-switch" for="message-search-text-mode" aria-hidden="true">
+                                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                                </label>
+                            </div>
+                            <button
+                                type="button"
+                                class="icon-button message-search-order-toggle{% if form_values.ordering_is_ascending %} is-ascending{% endif %}"
+                                data-search-order-toggle
+                                data-newest-label="{% translate 'Newest messages first by creation date' %}"
+                                data-oldest-label="{% translate 'Oldest messages first by creation date' %}"
+                                aria-label="{% if form_values.ordering_is_ascending %}{% translate 'Oldest messages first by creation date' %}{% else %}{% translate 'Newest messages first by creation date' %}{% endif %}"
+                                aria-pressed="{{ form_values.ordering_is_ascending|yesno:'true,false' }}"
+                                title="{% if form_values.ordering_is_ascending %}{% translate 'Oldest messages first by creation date' %}{% else %}{% translate 'Newest messages first by creation date' %}{% endif %}"
+                            >
+                                <svg class="message-search-order-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14m0 0 5-5m-5 5-5-5"></path></svg>
+                            </button>
+                            <label class="visually-hidden" for="message-search-query">{% translate "Search messages" %}</label>
+                            <input
+                                id="message-search-query"
+                                type="text"
+                                name="q"
+                                value="{{ form_values.q }}"
+                                placeholder="{% if form_values.mode == 'retrieval' %}{% translate 'Search all messages or narrow by filters' %}{% else %}{% translate 'Search messages' %}{% endif %}"
+                                autocomplete="off"
+                                spellcheck="false"
+                                maxlength="512"
+                                data-search-query
+                                data-retrieval-placeholder="{% translate 'Search all messages or narrow by filters' %}"
+                                data-elasticsearch-placeholder="{% translate 'Search messages' %}"
+                                {% if form_values.mode == "retrieval" %}disabled{% endif %}
+                            >
+                            <button type="submit" class="icon-button" aria-label="{% translate 'Search messages' %}" title="{% translate 'Search messages' %}">
+                                <svg class="message-search-icon" aria-hidden="true" viewBox="0 0 24 24" focusable="false"><circle cx="10.8" cy="10.8" r="6.8"></circle><path d="m16 16 5 5"></path></svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="message-search-navigation"><a class="button button-quiet" href="{{ analytics_url }}" data-browse-analytics title="{% translate 'Analytics uses date, room, tag and reply filters.' %}">{% translate "Browse analytics" %}<span aria-hidden="true">↗</span></a></div>
+                </div>
+
+                {% if search_submitted %}
+                    {% if search_error %}
+                    <p class="message-search-error" role="alert">{{ search_error }}</p>
+                    {% elif show_results %}
+                        {% if search_results %}
+                        <div class="message-search-results" aria-live="polite">
+                            <p class="message-search-count" data-search-result-count data-search-count-format="{% translate 'Showing {count} messages' %}">{% blocktranslate with count=search_results|length %}Showing {{ count }} messages{% endblocktranslate %}</p>
+                            <div class="message-search-list">
+                                {% for result in search_results %}
+                                <article class="message-search-result">
+                                    <p class="message-search-source">t.me/{{ result.room_name }}/{{ result.msg_id }}</p>
+                                    <h2><a href="{{ result.link }}" target="_blank" rel="noopener noreferrer">{% translate "Message in" %} @{{ result.room_name }}</a></h2>
+                                    <p class="message-search-snippet">{{ result.snippet }}</p>
+                                    <p class="message-search-meta">
+                                        {% if result.created_at %}{{ result.created_at|date:"M j, Y · H:i" }}{% endif %}
+                                        {% if result.media_type %}<span>{{ result.media_type }}</span>{% endif %}
+                                        {% if result.lang %}<span>{{ result.lang }}</span>{% endif %}
+                                        {% if result.views %}<span>{% blocktranslate with views=result.views %}{{ views }} views{% endblocktranslate %}</span>{% endif %}
+                                        {% if result.tags %}<span>{% translate "Tags" %}: {{ result.tags|join:", " }}</span>{% endif %}
+                                        {% if result.entities %}<span>{% translate "Entities" %}: {{ result.entities|join:", " }}</span>{% endif %}
+                                    </p>
+                                </article>
+                                {% endfor %}
+                            </div>
+                            {% if next_url or previous_url %}
+                            <nav class="message-search-pagination" aria-label="{% translate 'Search result pages' %}">
+                                {% if previous_url %}<a href="{{ previous_url }}" data-search-pagination>← {% translate "Previous results" %}</a>{% endif %}
+                                {% if next_url %}<a href="{{ next_url }}" data-search-more>{% translate "More results" %} →</a>{% endif %}
+                            </nav>
+                            {% endif %}
+                        </div>
+                        {% else %}
+                        <p class="message-search-empty">{% translate "No messages matched this search." %}</p>
+                        {% endif %}
+                    {% endif %}
+                {% endif %}
+            </div>
+        </div>
+        {% if search_submitted and show_results %}
+        <div class="message-search-count-bubble" data-search-count-bubble role="status" aria-live="polite">(<span data-search-count-loaded>{{ search_loaded_count }}</span>/<span data-search-count-total>{{ search_total_count|default_if_none:"…" }}</span>)</div>
+        {% endif %}
+    </form>
+</section>

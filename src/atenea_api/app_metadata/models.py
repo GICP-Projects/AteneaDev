@@ -3,20 +3,25 @@ from django.utils import timezone
 from django.contrib.contenttypes.fields import GenericRelation, GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from app_base.models import BaseModel, QueryItem
+from app_metadata.enums import EmbeddingSyncStatus, MetadataProcessingStatus
 
 
 # ==================================================================
 # 0.0  Embeddings Item 
 # ==================================================================
 class EmbeddingsItem(BaseModel):
-    STATUS_PENDING = "pending"
-    STATUS_SYNCED = "synced"
-    STATUS_FAILED = "failed"
-    STATUS_CHOICES = [
-        (STATUS_PENDING, "Pending"),
-        (STATUS_SYNCED, "Synced"),
-        (STATUS_FAILED, "Failed"),
-    ]
+    STATUS_PENDING = EmbeddingSyncStatus.PENDING.value
+    STATUS_SYNCED = EmbeddingSyncStatus.SYNCED.value
+    STATUS_FAILED = EmbeddingSyncStatus.FAILED.value
+    STATUS_CHOICES = EmbeddingSyncStatus.choices
+
+    PROCESSING_PENDING = MetadataProcessingStatus.PENDING.value
+    PROCESSING_CLAIMED = MetadataProcessingStatus.CLAIMED.value
+    PROCESSING_RUNNING = MetadataProcessingStatus.RUNNING.value
+    PROCESSING_RETRY_WAIT = MetadataProcessingStatus.RETRY_WAIT.value
+    PROCESSING_COMPLETED = MetadataProcessingStatus.COMPLETED.value
+    PROCESSING_FAILED = MetadataProcessingStatus.FAILED.value
+    PROCESSING_STATUS_CHOICES = MetadataProcessingStatus.choices
 
     query_items = GenericRelation(QueryItem)
 
@@ -36,6 +41,107 @@ class EmbeddingsItem(BaseModel):
     sync_error = models.TextField(blank=True, null=True)
     synced_at = models.DateTimeField(blank=True, null=True)
     calculated_at = models.DateTimeField(default=timezone.now, editable=False, null=True)
+    # ``sync_status`` remains Qdrant-specific.  These fields are the durable
+    # job ownership ledger and deliberately live with the embeddings domain.
+    processing_status = models.CharField(
+        max_length=16,
+        choices=PROCESSING_STATUS_CHOICES,
+        default=PROCESSING_PENDING,
+    )
+    claimed_batch = models.ForeignKey(
+        "app_scheduler.ProcessingBatch",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="claimed_embedding_states",
+    )
+    lease_until = models.DateTimeField(blank=True, null=True)
+    retry_after = models.DateTimeField(blank=True, null=True)
+    attempt_count = models.PositiveSmallIntegerField(default=0)
+    processing_error = models.TextField(blank=True, default="")
+    last_job = models.ForeignKey(
+        "app_scheduler.ProcessingJob",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="last_embedding_states",
+    )
+    last_batch = models.ForeignKey(
+        "app_scheduler.ProcessingBatch",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="last_embedding_state_batches",
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["processing_status", "lease_until"], name="embedstate_status_lease_idx"),
+        ]
+
+
+class SentimentState(models.Model):
+    """Current durable-processing state for a text item's sentiment.
+
+    It mirrors ``NERState`` instead of placing message state in
+    ``app_telegram``: sentiment is metadata-domain work and may later attach to
+    non-Telegram text objects as well.
+    """
+
+    PENDING = MetadataProcessingStatus.PENDING.value
+    CLAIMED = MetadataProcessingStatus.CLAIMED.value
+    RUNNING = MetadataProcessingStatus.RUNNING.value
+    RETRY_WAIT = MetadataProcessingStatus.RETRY_WAIT.value
+    COMPLETED = MetadataProcessingStatus.COMPLETED.value
+    FAILED = MetadataProcessingStatus.FAILED.value
+    STATUS_CHOICES = MetadataProcessingStatus.choices
+
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.UUIDField()
+    content_object = GenericForeignKey("content_type", "object_id")
+    processed_input_hash = models.CharField(max_length=64, blank=True, default="")
+    claimed_input_hash = models.CharField(max_length=64, blank=True, default="")
+    sentiment_version = models.CharField(max_length=256, blank=True, default="")
+    processed_at = models.DateTimeField(blank=True, null=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=PENDING)
+    claimed_batch = models.ForeignKey(
+        "app_scheduler.ProcessingBatch",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="claimed_sentiment_states",
+    )
+    lease_until = models.DateTimeField(blank=True, null=True)
+    retry_after = models.DateTimeField(blank=True, null=True)
+    attempt_count = models.PositiveSmallIntegerField(default=0)
+    last_error = models.TextField(blank=True, default="")
+    last_job = models.ForeignKey(
+        "app_scheduler.ProcessingJob",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="last_sentiment_states",
+    )
+    last_batch = models.ForeignKey(
+        "app_scheduler.ProcessingBatch",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="last_sentiment_state_batches",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["content_type", "object_id"],
+                name="unique_sentiment_state_content_object",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["status", "lease_until"], name="sentstate_status_lease_idx"),
+            models.Index(fields=["sentiment_version", "processed_at"], name="sentstate_version_done_idx"),
+        ]
 
 # ==================================================================
 # 0.1 Base Embed Item 

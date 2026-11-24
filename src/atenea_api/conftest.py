@@ -6,6 +6,18 @@ from app_telegram.models import MessageItem, RoomItem, SeedItem, TelegramAuth
 from app_users.models import User
 
 
+def pytest_addoption(parser):
+    parser.addoption("--clickhouse", action="store_true", help="Run real ClickHouse integration tests")
+
+
+def pytest_collection_modifyitems(config, items):
+    if not config.getoption("--clickhouse"):
+        skip = pytest.mark.skip(reason="Pass --clickhouse and start docker-compose.test.yml")
+        for item in items:
+            if "clickhouse" in item.keywords:
+                item.add_marker(skip)
+
+
 @pytest.fixture
 def api_client():
     return APIClient()

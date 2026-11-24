@@ -6,5 +6,5 @@ class AppTelegramConfig(AppConfig):
     name = 'app_telegram'
 
     def ready(self):
-        # Register signal handlers
-        import app_telegram.signals 
+        # Register credential and message-index synchronization handlers.
+        from app_telegram import signals  # noqa: F401

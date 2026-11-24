@@ -1,6 +1,6 @@
 [project]
 name = "atenea-api"
-version = "v18.07.26"
+version = "0.11.1"
 description = "Django REST API for the Atenea Telegram monitoring platform"
 requires-python = ">=3.11.9,<3.12"
 dependencies = [
@@ -12,7 +12,8 @@ dependencies = [
     "django==4.2.13",
     "django-celery-beat==2.6.0",
     "django-cors-headers==3.14.0",
-    "django-elasticsearch-dsl==8.0",
+    "django-elasticsearch-dsl==8.2",
+    # The unchanged DRF fork still depends on the legacy DSL compatibility package.
     "django-elasticsearch-dsl-drf",
     "django-oauth-toolkit==3.0.1",
     "django-phonenumber-field[phonenumberslite]==8.0.0",
@@ -21,8 +22,7 @@ dependencies = [
     "drf-social-oauth2==3.1.0",
     "drf-spectacular==0.27.2",
     "eld==1.0.6",
-    "elasticsearch==8.13.1",
-    "elasticsearch-dsl==8.13.1",
+    "elasticsearch==8.19.3",
     "emoji==2.8.0",
     "gevent==24.11.1",
     "geoip2==4.6.0",
@@ -30,23 +30,50 @@ dependencies = [
     "markdown==3.5.1",
     "numpy==2.3.3",
     "openai==1.82.0",
+    "pydantic==2.13.4",
     "psycopg2-binary==2.9.9",
     "python-dateutil==2.8.2",
     "python-dotenv==1.0.0",
     "qdrant-client==1.17.1",
     "redis==4.6.0",
     "telethon==1.36.0",
+    "clickhouse-connect>=0.9,<2",
 ]
 
 [tool.uv]
 package = false
 link-mode = "copy"
 
+[tool.semantic_release]
+allow_zero_version = true
+major_on_zero = false
+tag_format = "v{version}"
+version_toml = ["pyproject.toml:project.version"]
+commit_message = "chore(release): {version}"
+build_command = """
+python -m pip install --quiet uv==0.11.26
+uv lock --upgrade-package "$PACKAGE_NAME"
+git add uv.lock
+"""
+commit_parser = "conventional"
+
+[tool.semantic_release.branches.main]
+match = "^master$"
+prerelease = false
+
+[tool.semantic_release.commit_parser_options]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf"]
+other_allowed_tags = ["build", "chore", "ci", "docs", "style", "refactor", "test"]
+parse_squash_commits = true
+ignore_merge_commits = true
+
 [tool.uv.sources]
 django-elasticsearch-dsl-drf = { git = "https://github.com/srfonso/django-elasticsearch-dsl-drf" }
 
 [dependency-groups]
 dev = [
+    "httpx2==2.13.1",
     "pytest==8.3.5",
     "pytest-cov==6.1.1",
     "pytest-django==4.11.1",
@@ -57,6 +84,7 @@ DJANGO_SETTINGS_MODULE = "atenea_api.settings.test"
 python_files = ["test_*.py", "tests.py"]
 testpaths = [
     "app_base",
+    "app_dashboard",
     "app_entity",
     "app_frontend",
     "app_metadata",
@@ -73,12 +101,14 @@ filterwarnings = [
 ]
 markers = [
     "integration: tests that use PostgreSQL while keeping external services mocked",
+    "clickhouse: tests requiring the isolated ClickHouse service and --clickhouse",
 ]
 
 [tool.coverage.run]
 branch = true
 source = [
     "app_base",
+    "app_dashboard",
     "app_entity",
     "app_frontend",
     "app_metadata",

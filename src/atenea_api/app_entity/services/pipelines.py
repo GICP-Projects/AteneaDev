@@ -1,7 +1,7 @@
 from celery.app import shared_task
 from app_telegram.models import MessageItem
 from app_telegram.serializers import ANY as TAG_ANY
-from app_entity.services.ner import run_ner
+from app_entity.services.jobs import create_ner_backfill_job
 
 
 # ==========================================================
@@ -29,7 +29,10 @@ def ner_extraction_msgs_pipeline(
     lang = [], 
     type = [],
     block_size = 100000,
-    token = None
+    token = None,
+    refresh = False,
+    reindex = False,
+    scheduler_context = None,
 ):
     """ MessageItem NER extraction pipeline wrapper.
     It initializes the pipeline to extract the entities from the messages that 
@@ -78,26 +81,23 @@ def ner_extraction_msgs_pipeline(
         UUID.hex
     """
     
-    and_filter_fields = {
-        # Last update range filter
-        "created_at__gte": createdat_min,
-        "created_at__lte": createdat_max,
-        "stored_date__gte": stored_since,
-        "media_type__in": type,
-        "lang__in": lang,
-        "is_reply": is_reply
-    }
-
-    run_ner.delay(
-        token,
-        MessageItem.__name__,
-        MessageItem._meta.app_label,
-        "annotated_text",
-        and_filter_fields=and_filter_fields,
-        list_filter_fields = {
-            "room__unique_name__iexact": {"values": [r.strip() for r in room], "OR": True},
-            "room__tags__icontains": {"values": tags, "OR": tag_match == TAG_ANY},
+    # Scheduled/manual invocations use the same bounded NER-only Job as the
+    # Telegram REST endpoint.
+    job, _ = create_ner_backfill_job(
+        filters={
+            "room": room,
+            "tags": tags,
+            "tag_match": tag_match,
+            "is_reply": is_reply,
+            "createdat_min": createdat_min,
+            "createdat_max": createdat_max,
+            "stored_since": stored_since,
+            "lang": lang,
+            "type": type,
+            "refresh": refresh,
         },
-        apply_distinct = False, # With the current filters there is no risk of duplicates.
-        block_size=block_size
+        request_token=token,
+        reindex=reindex,
+        lifecycle_policy=scheduler_context,
     )
+    return str(job.id)

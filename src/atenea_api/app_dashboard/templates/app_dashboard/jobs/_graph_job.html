@@ -1,0 +1,29 @@
+{% load i18n %}
+<section class="dag-job-group" data-dag-job="{{ node.job_id }}" data-job-status="{{ node.status_code }}" data-graph-node="job-{{ node.job_id }}">
+    <header class="dag-job-header">
+        <div class="dag-job-heading">
+            <span class="dag-badge dag-badge--{{ node.status.tone }} dag-status-icon"
+                data-dag-tooltip="{{ node.status.label }}" role="img" tabindex="0"
+                aria-label="{{ node.status.label }}" title="{{ node.status.label }}">
+                <span aria-hidden="true">{{ node.status.icon }}</span>
+            </span>
+            <div>
+                <h4>{{ node.label }}</h4>
+                <small>{% translate "Job" %} · <code>{{ node.job_id|slice:':8' }}</code></small>
+            </div>
+        </div>
+        <span class="dag-job-batch-count" data-job-batch-count>{% blocktranslate count count=node.batch_count %}{{ count }} Batch{% plural %}{{ count }} Batches{% endblocktranslate %}</span>
+    </header>
+
+    <div class="dag-task-list{% if graph.pipeline.virtual %} dag-task-list--virtual{% endif %}"
+        {% if graph.pipeline.virtual %}data-dag-virtual-list="{{ node.job_id }}" role="list"{% endif %}
+        aria-label="{% translate 'Batches in this Job' %}">
+        {% if graph.pipeline.virtual %}
+        <noscript>{% translate "Enable JavaScript to explore the batches in this pipeline." %}</noscript>
+        {% else %}
+        {% for task in node.tasks %}
+        {% include "app_dashboard/jobs/_graph_task.html" with task=task %}
+        {% endfor %}
+        {% endif %}
+    </div>
+</section>

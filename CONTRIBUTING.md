@@ -38,6 +38,18 @@ tests are documented in
 - The API lives in `src/atenea_api`.
 - Auxiliary FastAPI services live in `src/atenea_services`.
 
+## Commits and releases
+
+Use Conventional Commit subjects: `fix` and `perf` create patch releases;
+`feat` creates a minor release. Add `!` or a `BREAKING CHANGE` footer for an
+incompatible change; while the version is `0.x`, it advances the minor number.
+`docs`, `chore`, `ci`, and other maintenance commits do not create releases.
+
+Pull requests to `master` run the automated checks. After a release-worthy change
+is merged, GitHub Actions updates the API version, creates a tag and GitHub
+Release, and publishes or retags the API, NER, and sentiment images in GHCR. The
+initial release baseline is `v0.8.0`.
+
 ## Reporting Issues
 
 When reporting a bug, include:

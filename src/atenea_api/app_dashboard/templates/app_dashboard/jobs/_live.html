@@ -1,0 +1,66 @@
+{% load i18n %}
+<section class="live-summary" aria-label="{% translate 'Updated Job summary' %}" data-current-active="{{ graph.active|yesno:'true,false' }}">
+    {% if job.object.can_retry_failed %}
+    <div class="alert">
+        <p>{% translate "This Job has failed Batches waiting for a retry." %}</p>
+        <form method="post" action="{% url 'app_dashboard:job-action' job.object.pk 'retry-failed' %}">
+            {% csrf_token %}
+            <button class="button button-warning" type="submit">{% translate "Retry failed" %}</button>
+        </form>
+    </div>
+    {% endif %}
+    {% if graph.pending_child_jobs or graph.retryable_child_jobs %}
+    <div class="alert">
+        <p>{% translate "Downstream processing is still pending. Its progress and retries are independent of this Job." %}</p>
+        {% if graph.retryable_child_jobs %}
+        <form method="post" action="{% url 'app_dashboard:job-action' job.object.pk 'retry-pending' %}">
+            {% csrf_token %}
+            <button class="button button-warning" type="submit">{% translate "Retry pending processing" %}</button>
+        </form>
+        {% endif %}
+    </div>
+    {% endif %}
+    <div class="progress-card">
+        <div class="progress-row"><span>{% translate "Progress" %}</span>{% if job.progress != None %}<strong>{{ job.progress }}%</strong>{% else %}<strong>{% translate "No estimate available" %}</strong>{% endif %}</div>
+        <div class="progress-track progress-track-{{ job.status.tone }}" aria-hidden="true">{% if job.progress != None %}<span style="width: {{ job.progress }}%"></span>{% endif %}</div>
+        <span class="workflow-summary-batches" role="img" aria-label="{% translate 'Completed Batches' %}: {{ job.completed_batches }} / {{ job.total_batches }}" title="{% translate 'Completed Batches' %}: {{ job.completed_batches }} / {{ job.total_batches }}"><span aria-hidden="true">✓</span>{{ job.completed_batches }} / {{ job.total_batches }}</span>
+    </div>
+
+    {% if graph.workflow_summary %}
+    <section class="workflow-summary" aria-labelledby="workflow-summary-title">
+        <div class="workflow-summary-heading">
+            <h2 id="workflow-summary-title">{% translate "Workflow summary" %}</h2>
+        </div>
+        <div class="workflow-summary-grid">
+            {% for stage in graph.workflow_summary %}
+            <article class="workflow-summary-card workflow-summary-card--{{ stage.status.tone }}{% if stage.notice or stage.outputs.0.destination %} workflow-summary-card--destinations{% endif %}" aria-label="{{ stage.label }} · {{ stage.status.label }}">
+                <header>
+                    <strong title="{{ stage.label }}">{{ stage.label }}</strong>
+                    <span class="workflow-summary-status" role="img" aria-label="{{ stage.status.label }}" title="{{ stage.status.label }}">{{ stage.status.icon }}</span>
+                </header>
+                <div class="workflow-summary-values">
+                    {% for metric in stage.processed %}<span class="workflow-summary-metric" role="img" aria-label="{{ metric.label }}: {{ metric.value }} {{ metric.unit }}" title="{{ metric.label }}: {{ metric.value }} {{ metric.unit }}">{% include "app_dashboard/jobs/_metric_icon.html" with metric=metric icon_class="workflow-summary-icon" %}<strong>{{ metric.compact_value }}</strong></span>{% endfor %}
+                    {% for metric in stage.outputs %}<span class="workflow-summary-metric" role="img" aria-label="{{ metric.label }}: {{ metric.value }} {{ metric.unit }}" title="{{ metric.label }}: {{ metric.value }} {{ metric.unit }}">{% include "app_dashboard/jobs/_metric_icon.html" with metric=metric icon_class="workflow-summary-icon" %}{% if metric.destination %}<span>{{ metric.destination }}</span>{% endif %}<strong>{{ metric.compact_value }}</strong></span>{% endfor %}
+                    {% if not stage.processed and not stage.outputs %}
+                    {% for metric in stage.inputs %}<span class="workflow-summary-metric" role="img" aria-label="{{ metric.label }}: {{ metric.value }} {{ metric.unit }}" title="{{ metric.label }}: {{ metric.value }} {{ metric.unit }}">{% include "app_dashboard/jobs/_metric_icon.html" with metric=metric icon_class="workflow-summary-icon" %}<strong>{{ metric.compact_value }}</strong></span>{% endfor %}
+                    {% endif %}
+                    {% for reason in stage.skipped %}<span class="workflow-summary-metric workflow-summary-reason" role="img" aria-label="{{ reason.label }}: {{ reason.value }} {% translate 'skipped' %}" title="{{ reason.label }}: {{ reason.value }} {% translate 'skipped' %}"><span aria-hidden="true">⊘</span><strong>{{ reason.compact_value }}</strong></span>{% endfor %}
+                    {% for reason in stage.failed %}<span class="workflow-summary-metric workflow-summary-reason workflow-summary-reason--failed" role="img" aria-label="{{ reason.label }}: {{ reason.value }} {% translate 'failed' %}" title="{{ reason.label }}: {{ reason.value }} {% translate 'failed' %}"><span aria-hidden="true">!</span><strong>{{ reason.compact_value }}</strong></span>{% endfor %}
+                </div>
+                {% if stage.notice %}<small class="workflow-summary-notice">{{ stage.notice }}</small>{% endif %}
+            </article>
+            {% endfor %}
+        </div>
+    </section>
+    {% else %}
+    <div class="workflow-summary-empty">{% translate "No stage metrics available yet." %}</div>
+    {% endif %}
+
+    {% if job.object.last_error %}
+    {% if job.error_recovered %}
+    <div class="alert"><strong>{% translate "Last recovered error:" %}</strong> {{ job.object.last_error }}</div>
+    {% else %}
+    <div class="alert alert-error"><strong>{% translate "Latest error:" %}</strong> {{ job.object.last_error }}</div>
+    {% endif %}
+    {% endif %}
+</section>

@@ -3,7 +3,10 @@ from .models import EntityItem, AnnotatedEntity
 
 # Register your models here.
 class EntityItemAdmin(admin.ModelAdmin):
-    list_display = ["id", "name", "type"]
+    list_display = ["id", "name", "type_name"]
+
+    def get_readonly_fields(self, request, obj=None):
+        return ("type",) if obj is not None else ()
 
 admin.site.register(EntityItem, EntityItemAdmin)
 

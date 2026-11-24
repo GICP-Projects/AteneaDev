@@ -1,0 +1,115 @@
+{% load i18n dashboard_assets %}
+<!doctype html>
+<html lang="{{ LANGUAGE_CODE }}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>{% block title %}{% translate "Dashboard" %}{% endblock %} · Atenea</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{% dashboard_static 'app_dashboard/dashboard.css' %}">
+    <script>
+        (function () {
+            try {
+                var theme = window.localStorage.getItem("atenea-dashboard-theme");
+                if (!theme && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+                    theme = "dark";
+                }
+                if (theme === "dark" || theme === "light") {
+                    document.documentElement.dataset.theme = theme;
+                }
+            } catch (error) {
+                /* Theme preference is optional and must not block the dashboard. */
+            }
+        }());
+    </script>
+    {% block extra_head %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+    <a class="skip-link" href="#main-content">{% translate "Skip to content" %}</a>
+    <header class="site-header">
+        <div class="shell header-inner">
+            <a class="brand" href="{% url 'app_dashboard:home' %}">Atenea <span>{% translate "Dashboard" %}</span></a>
+            {% with current_url=request.resolver_match.url_name %}
+            {% if user.is_authenticated %}
+            <nav aria-label="{% translate 'Main navigation' %}">
+                <a href="{% url 'app_dashboard:home' %}"{% if current_url == 'home' %} aria-current="page"{% endif %}>{% translate "Overview" %}</a>
+                <a href="{% url 'app_dashboard:search' %}"{% if current_url == 'search' %} aria-current="page"{% endif %}>{% translate "Search" %}</a>
+                <a href="{% url 'app_dashboard:jobs' %}"{% if current_url == 'jobs' or current_url == 'job-new' or current_url == 'job-detail' or current_url == 'job-live' or current_url == 'job-graph' or current_url == 'job-action' %} aria-current="page"{% endif %}>{% translate "Jobs" %}</a>
+                <a href="{% url 'app_dashboard:schedules' %}"{% if current_url == 'schedules' or current_url == 'schedule-new' or current_url == 'schedule-edit' or current_url == 'schedule-toggle' or current_url == 'schedule-delete' %} aria-current="page"{% endif %}>{% translate "Schedules" %}</a>
+                {% block header_admin_link %}
+                    {% if user.is_staff %}<a href="{% url 'admin:index' %}">{% translate "Admin" %}</a>{% endif %}
+                {% endblock %}
+            </nav>
+            {% endif %}
+            {% endwith %}
+            <button
+                class="theme-toggle"
+                type="button"
+                data-theme-toggle
+                data-dark-text="{% translate 'Dark mode' %}"
+                data-light-text="{% translate 'Light mode' %}"
+                data-use-dark="{% translate 'Use dark mode' %}"
+                data-use-light="{% translate 'Use light mode' %}"
+                aria-label="{% translate 'Use dark mode' %}"
+                aria-pressed="false"
+            >
+                <svg class="theme-icon theme-icon-moon" aria-hidden="true" viewBox="0 0 24 24" focusable="false"><path d="M20 15.4A8.5 8.5 0 0 1 8.6 4a8.5 8.5 0 1 0 11.4 11.4Z"></path></svg>
+                <svg class="theme-icon theme-icon-sun" aria-hidden="true" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>
+                <span data-theme-label>{% translate "Dark mode" %}</span>
+            </button>
+            {% if user.is_authenticated %}
+            <form method="post" action="{% url 'app_dashboard:logout' %}" class="logout-form">
+                {% csrf_token %}
+                <button type="submit" class="link-button">{% translate "Sign out" %}</button>
+            </form>
+            {% endif %}
+        </div>
+    </header>
+    <main id="main-content" class="shell main-content">
+        {% block dashboard_messages %}
+            {% if messages %}
+            <div class="messages" aria-live="polite">
+                {% for message in messages %}
+                <div class="message message-{{ message.tags|default:'info' }}">{{ message }}</div>
+                {% endfor %}
+            </div>
+            {% endif %}
+        {% endblock %}
+        {% block content_wrapper %}
+            {% block content %}{% endblock %}
+        {% endblock %}
+    </main>
+    <footer class="site-footer">
+        <div class="shell footer-inner">
+            <p class="footer-copyright">{% translate "Copyright © 2026, GiCP. All rights reserved." %}</p>
+            <form method="post" action="{% url 'app_dashboard:language' %}" class="language-form language-form--footer">
+                {% csrf_token %}
+                <label for="dashboard-language" class="visually-hidden">{% translate "Language" %}</label>
+                <select id="dashboard-language" name="language" onchange="this.form.submit()">
+                    <option value="en" lang="en" title="English"{% if LANGUAGE_CODE == 'en' %} selected{% endif %}>EN</option>
+                    <option value="es" lang="es" title="Spanish"{% if LANGUAGE_CODE == 'es' %} selected{% endif %}>ES</option>
+                </select>
+                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+            </form>
+            <nav class="footer-links" aria-label="{% translate 'Social links' %}">
+                <a class="footer-brand" href="https://gicp.es/" target="_blank" rel="noopener noreferrer">
+                    <span class="footer-logo-wrap">
+                        <img src="https://gicp.es/wp-content/uploads/2023/10/gicp_new.png" alt="GiCP">
+                        <span class="footer-logo-fallback" aria-hidden="true">GiCP</span>
+                    </span>
+                    <span>gicp.es</span>
+                </a>
+                <a class="footer-social" href="https://x.com/gicp_es" target="_blank" rel="noopener noreferrer" aria-label="{% translate 'GiCP on X' %}">
+                    <svg class="social-icon" aria-hidden="true" viewBox="0 0 24 24" focusable="false"><path d="M18.9 2H22l-6.8 7.8L23.2 22h-6.3l-4.9-6.4L6.4 22H3.3l7.2-8.2L2.8 2h6.4l4.4 5.8L18.9 2Zm-1.1 17.8h1.7L8.3 4H6.5l11.3 15.8Z"></path></svg>
+                    <span>{% translate "X / Twitter" %}</span>
+                </a>
+            </nav>
+        </div>
+    </footer>
+    <script src="{% dashboard_static 'app_dashboard/dashboard.js' %}"></script>
+    {% block extra_scripts %}{% endblock %}
+</body>
+</html>

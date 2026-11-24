@@ -26,6 +26,11 @@ API_KEY="<API_KEY>"
 AUTH_HEADER="Authorization: ApiKey ${API_KEY}"
 ```
 
+Authenticated non-staff users can use the message list, count, vector, entity
+ranking, and message statistics read endpoints. Message processing actions
+remain staff-only. Room and message Elasticsearch search are public; the
+frontend form selectors use a separate `Front-API-Key` header.
+
 Search endpoints may allow anonymous access depending on the endpoint and
 deployment policy. Supplying the API key also gives authenticated requests the
 configured pagination limits.
@@ -42,7 +47,8 @@ seed ingestion -> population -> scanning -> enrichment/indexing
 ```
 
 Repeat `tag` to select several tags. `tag_match=any` is the default;
-`tag_match=all` requires every supplied tag.
+`tag_match=all` requires every supplied tag. PostgreSQL tag filters match
+complete, case-sensitive seed or room tag values.
 
 ### Dates and repeated parameters
 
@@ -82,22 +88,48 @@ worker progress.
 
 ### Pagination
 
-Database retrieval responses use this structure:
+The PostgreSQL message lists, `GET /api/v1/tg/msg` and
+`GET /api/v1/tg/msg/vector`, use signed cursors and return no total:
 
 ```json
 {
-  "next": "http://127.0.0.1:8000/api/v1/tg/msg?page=2",
+  "next": "http://127.0.0.1:8000/api/v1/tg/msg?page-size=100&cursor=<signed-cursor>",
   "previous": null,
-  "count": 1250,
   "token": "550e8400-e29b-41d4-a716-446655440000",
   "results": []
 }
 ```
 
-Use `page` and, for authenticated database endpoints, `page-size`. Export a
-complete selection by following `next` until it is `null`. Elasticsearch search
-endpoints also use page-number pagination; their exact page-size behaviour is
-documented in Swagger.
+Start without `cursor`, then follow `next` until it is `null`; use `previous`
+to move backwards. These links preserve filters and `page-size`. Messages default
+to 100 items and vectors to 10; both accept at most 100 items per request.
+Messages are ordered by ascending `created_at`, then `id`. Unknown dates come
+last, ordered by `id`. There is no limit on the number of pages.
+
+Clients must treat cursors as opaque values. Their signatures prevent
+modification; they do not encrypt the contents. A cursor is bound to its endpoint,
+filters, and ordering. Sending `page`, a modified cursor, or a cursor from a
+different selection returns `400 Bad Request` with the usual trace token.
+
+Request a total only when needed, using the same filters with
+`GET /api/v1/tg/msg/count` or `GET /api/v1/tg/msg/vector/count`:
+
+```json
+{
+  "count": 1250,
+  "token": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+The count routes require the same staff permissions as their lists. They count
+the complete filtered selection, independently of pagination. List requests
+execute no count query. Neither cursors nor counts freeze the data: the total is
+calculated when requested, and insertions, deletions, or updates may change the
+selection during traversal.
+
+Other database retrieval endpoints retain `page`, `page-size`, and `count` in
+their responses. Elasticsearch search endpoints also retain page-number
+pagination; their exact page-size behaviour is documented in Swagger.
 
 ## Monitoring workflow
 
@@ -127,9 +159,10 @@ curl -X POST "${HOST}/api/v1/tg/seed/bulk" \
 Populate only the selected collection:
 
 ```bash
-curl -G "${HOST}/api/v1/tg/seed/populate" \
+curl -X POST "${HOST}/api/v1/tg/seed/populate" \
   -H "${AUTH_HEADER}" \
-  --data-urlencode "tag=research-collection"
+  -H "Content-Type: application/json" \
+  --data '{"tag": ["research-collection"]}'
 ```
 
 Seed population can also be filtered by resource/title match, language,
@@ -137,15 +170,20 @@ resource type, and collection date. Telegram username resolution is limited to
 200 operations per credential per day; this does not limit scanning messages
 from rooms whose Telegram ID and access hash are already known.
 
+Deleting a seed with `DELETE /api/v1/tg/seed/{id}` or
+`POST /api/v1/tg/seed/delete/bulk` preserves related rooms, users and collected
+messages, including their NER annotations. The related room/user `seed_item`
+reference becomes `null`; their tags and other collected data are retained.
+
 ### 3. Scan rooms
 
 Retrieve up to 50,000 messages per selected room:
 
 ```bash
-curl -G "${HOST}/api/v1/tg/room/scan" \
+curl -X POST "${HOST}/api/v1/tg/room/scan" \
   -H "${AUTH_HEADER}" \
-  --data-urlencode "tag=research-collection" \
-  --data-urlencode "max_msgs=50000"
+  -H "Content-Type: application/json" \
+  --data '{"tag": ["research-collection"], "max_msgs": 50000}'
 ```
 
 Room scans can be restricted by room name, tag, language, channel/group type,
@@ -155,9 +193,10 @@ the same Celery pipelines recurrently.
 If stored access data becomes invalid, recalculate it for the collection:
 
 ```bash
-curl -G "${HOST}/api/v1/tg/room/access" \
+curl -X POST "${HOST}/api/v1/tg/room/access" \
   -H "${AUTH_HEADER}" \
-  --data-urlencode "tag=research-collection"
+  -H "Content-Type: application/json" \
+  --data '{"tag": ["research-collection"]}'
 ```
 
 ### 4. Scan channel comments
@@ -165,14 +204,20 @@ curl -G "${HOST}/api/v1/tg/room/access" \
 Comment extraction is independent from the main room scan:
 
 ```bash
-curl -G "${HOST}/api/v1/tg/msg/scan" \
+curl -X POST "${HOST}/api/v1/tg/msg/scan" \
   -H "${AUTH_HEADER}" \
-  --data-urlencode "tag=research-collection" \
-  --data-urlencode "max_msgs=2500"
+  -H "Content-Type: application/json" \
+  --data '{"tag": ["research-collection"], "max_msgs": 2500}'
 ```
 
 Use this selectively because discussion threads can substantially increase
 Telegram requests and the number of stored messages.
+
+The response reports selected parent messages in `items_count`, selected
+channels in `rooms_count`, and the root/child Job IDs. `max_msgs` applies per
+parent across retries. Comments are collected in configurable batches of
+parent-message IDs; see [Scanning channel comments](pipelines/scan-comments.md) for
+ingestion boundaries, NULL dates and recovery behavior.
 
 ## Message enrichment
 
@@ -181,29 +226,34 @@ again:
 
 ```bash
 # Named Entity Recognition
-curl -G "${HOST}/api/v1/tg/msg/ner" \
+curl -X POST "${HOST}/api/v1/tg/msg/ner" \
   -H "${AUTH_HEADER}" \
-  --data-urlencode "tag=research-collection"
+  -H "Content-Type: application/json" \
+  --data '{"tag": ["research-collection"]}'
 
 # Elasticsearch indexing
-curl -G "${HOST}/api/v1/tg/msg/index" \
+curl -X POST "${HOST}/api/v1/tg/msg/index" \
   -H "${AUTH_HEADER}" \
-  --data-urlencode "tag=research-collection"
+  -H "Content-Type: application/json" \
+  --data '{"tag": ["research-collection"]}'
 
 # Embedding inference and Qdrant synchronization
-curl -G "${HOST}/api/v1/tg/msg/embed" \
+curl -X POST "${HOST}/api/v1/tg/msg/embed" \
   -H "${AUTH_HEADER}" \
-  --data-urlencode "tag=research-collection"
+  -H "Content-Type: application/json" \
+  --data '{"tag": ["research-collection"]}'
 
 # Sentiment analysis
-curl -G "${HOST}/api/v1/tg/msg/sentiment" \
+curl -X POST "${HOST}/api/v1/tg/msg/sentiment" \
   -H "${AUTH_HEADER}" \
-  --data-urlencode "tag=research-collection"
+  -H "Content-Type: application/json" \
+  --data '{"tag": ["research-collection"]}'
 
 # Embedding-based categorization
-curl -G "${HOST}/api/v1/tg/msg/categorize" \
+curl -X POST "${HOST}/api/v1/tg/msg/categorize" \
   -H "${AUTH_HEADER}" \
-  --data-urlencode "tag=research-collection"
+  -H "Content-Type: application/json" \
+  --data '{"tag": ["research-collection"]}'
 ```
 
 Common message filters include `room`, `tag`, `tag_match`, `lang`, `type`,
@@ -217,11 +267,14 @@ requests additionally support `slot`, `instruct`, and `refresh`.
 The following request downloads PDF attachments of at most 50 MiB:
 
 ```bash
-curl -G "${HOST}/api/v1/tg/msg/media/download" \
+curl -X POST "${HOST}/api/v1/tg/msg/media/download" \
   -H "${AUTH_HEADER}" \
-  --data-urlencode "tag=research-collection" \
-  --data-urlencode "extensions=pdf" \
-  --data-urlencode "max_file_size_bytes=52428800"
+  -H "Content-Type: application/json" \
+  --data '{
+    "tag": ["research-collection"],
+    "extensions": ["pdf"],
+    "max_file_size_bytes": 52428800
+  }'
 ```
 
 Downloaded objects are stored in the configured S3-compatible provider.
@@ -231,7 +284,7 @@ returns temporary presigned URLs rather than requiring public bucket access.
 
 ### Telegram media metadata-only collection
 
-`GET /api/v1/tg/msg/media/download` can inspect Telegram media without
+`POST /api/v1/tg/msg/media/download` can inspect Telegram media without
 downloading or storing the binary object by sending `metadata_only=true`.
 
 The endpoint considers already scanned messages whose media type is photo,
@@ -239,12 +292,15 @@ video, audio, document, or GIF. It supports `room`, `tag`, `tag_match`,
 `createdat_min`, `createdat_max`, `stored_since`, `lang`, and `is_reply`.
 
 ```bash
-curl -G "${HOST}/api/v1/tg/msg/media/download" \
+curl -X POST "${HOST}/api/v1/tg/msg/media/download" \
   -H "${AUTH_HEADER}" \
-  --data-urlencode "tag=research-collection" \
-  --data-urlencode "metadata_only=true" \
-  --data-urlencode "createdat_min=01/01/2024" \
-  --data-urlencode "createdat_max=31/01/2024"
+  -H "Content-Type: application/json" \
+  --data '{
+    "tag": ["research-collection"],
+    "metadata_only": true,
+    "createdat_min": "01/01/2024",
+    "createdat_max": "31/01/2024"
+  }'
 ```
 
 Metadata-only rows are stored with `status=skipped` and
@@ -272,10 +328,13 @@ Scheduler fields include `status`, `total`, `messages_scheduled`,
 External hosting references are catalogued but not downloaded:
 
 ```bash
-curl -G "${HOST}/api/v1/tg/msg/external-url/collect" \
+curl -X POST "${HOST}/api/v1/tg/msg/external-url/collect" \
   -H "${AUTH_HEADER}" \
-  --data-urlencode "tag=research-collection" \
-  --data-urlencode "use_text_fallback=true"
+  -H "Content-Type: application/json" \
+  --data '{
+    "tag": ["research-collection"],
+    "use_text_fallback": true
+  }'
 ```
 
 Only built-in or configured whitelisted providers are retained. Additional
@@ -349,11 +408,24 @@ curl -G "${HOST}/api/v1/tg/msg" \
   -H "${AUTH_HEADER}" \
   --data-urlencode "tag=research-collection" \
   --data-urlencode "createdat_min=01/01/2024" \
-  --data-urlencode "page=1" \
   --data-urlencode "page-size=100"
 ```
 
-Follow the response's `next` link to export the complete selection.
+Follow the response's `next` link with the same authorization header to export
+the complete selection:
+
+```bash
+curl "${NEXT_URL}" -H "${AUTH_HEADER}"
+```
+
+If the export needs a total, request it separately with the same filters:
+
+```bash
+curl -G "${HOST}/api/v1/tg/msg/count" \
+  -H "${AUTH_HEADER}" \
+  --data-urlencode "tag=research-collection" \
+  --data-urlencode "createdat_min=01/01/2024"
+```
 
 ### Lexical and structured search
 
@@ -370,9 +442,20 @@ curl -G "${HOST}/api/v1/tg/msg/search" \
   --data-urlencode "page=1"
 ```
 
-Use `qem` for an exact phrase. Multi-value Elasticsearch filters use `__`, for
-example `entity__terms=example.org__example.net` or
-`room_name__terms=room-a__room-b`.
+Use `qem` for exact phrase search. Repeat `qem` to match several phrases; they
+are combined with OR by default. Set `qem_operator=and` to require every phrase:
+
+```bash
+curl -G "${HOST}/api/v1/tg/msg/search" \
+  -H "${AUTH_HEADER}" \
+  --data-urlencode "qem=credential theft" \
+  --data-urlencode "qem=crypto wallet" \
+  --data-urlencode "qem_operator=or"
+```
+
+Use `qem_operator=and` in place of `or` when all phrases must match. Multi-value
+Elasticsearch filters use `__`, for example
+`entity__terms=example.org__example.net` or `room_name__terms=room-a__room-b`.
 
 ### Semantic search
 
@@ -392,7 +475,16 @@ default instruction when no custom instruction is supplied.
 curl -G "${HOST}/api/v1/tg/msg/vector" \
   -H "${AUTH_HEADER}" \
   --data-urlencode "tag=research-collection" \
-  --data-urlencode "page=1"
+  --data-urlencode "page-size=10"
+```
+
+Follow `next` to continue. To count only messages that have embeddings, use
+the same filters on the separate counter:
+
+```bash
+curl -G "${HOST}/api/v1/tg/msg/vector/count" \
+  -H "${AUTH_HEADER}" \
+  --data-urlencode "tag=research-collection"
 ```
 
 ### Aggregate message activity

@@ -1,0 +1,39 @@
+{% load i18n %}
+<label for="{{ autocomplete_id }}-entry">{{ autocomplete_label }}</label>
+<div
+    class="list-editor autocomplete-editor"
+    data-list-editor
+    data-autocomplete-editor
+    data-autocomplete-kind="{{ autocomplete_kind }}"
+    data-autocomplete-url="{{ autocomplete_url }}"
+    {% if autocomplete_value_separator %}data-value-separator="{{ autocomplete_value_separator }}"{% endif %}
+    data-remove-label="{% translate 'Remove' %}"
+    data-empty-label="{% translate 'No items selected yet.' %}"
+    data-search-placeholder="{% translate 'Search and select…' %}"
+    data-no-results-label="{% translate 'No matching options.' %}"
+    data-error-label="{% translate 'The options could not be loaded.' %}"
+>
+    {% if not autocomplete_values_below_input %}<div class="list-values" data-list-values aria-live="polite"></div>{% endif %}
+    <div class="list-entry-row autocomplete-entry-row">
+        <input
+            id="{{ autocomplete_id }}-entry"
+            type="search"
+            data-autocomplete-entry
+            autocomplete="off"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded="false"
+            aria-controls="{{ autocomplete_id }}-options"
+            placeholder="{% translate 'Search and select…' %}"
+            {% if autocomplete_bound_field %}aria-describedby="{{ autocomplete_id }}-help"{% endif %}
+        >
+        <button class="icon-button" type="button" data-autocomplete-add aria-label="{% translate 'Add item' %}">+</button>
+        <div id="{{ autocomplete_id }}-options" class="autocomplete-options" data-autocomplete-options role="listbox" hidden></div>
+    </div>
+    {% if autocomplete_values_below_input %}<div class="list-values" data-list-values aria-live="polite"></div>{% endif %}
+    {% if autocomplete_bound_field %}
+        {{ field }}
+    {% else %}
+        <input type="hidden" id="{{ autocomplete_id }}" name="{{ autocomplete_name }}" value="{{ autocomplete_value }}" data-list-value{% if autocomplete_mode and form_values.mode != autocomplete_mode %} disabled{% endif %}>
+    {% endif %}
+</div>

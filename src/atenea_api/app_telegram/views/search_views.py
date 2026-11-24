@@ -1,12 +1,12 @@
 from django.conf import settings
+from elasticsearch.dsl import Q
 from rest_framework import viewsets, status
 from rest_framework.permissions import AllowAny
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.decorators import action
 from django_elasticsearch_dsl_drf.viewsets import DocumentViewSet
 from django_elasticsearch_dsl_drf.pagination import PageNumberPagination
 from django_elasticsearch_dsl_drf.filter_backends.search.base import BaseSearchFilterBackend
-from django_elasticsearch_dsl_drf.filter_backends.search.query_backends import MatchPhraseQueryBackend
 from django_elasticsearch_dsl_drf.filter_backends import (
     MultiMatchSearchFilterBackend, 
     FilteringFilterBackend, 
@@ -32,7 +32,13 @@ from drf_spectacular.utils import (
     OpenApiParameter,
 )
 from app_base.serializers import GenericResponseSerializer
-from app_base.views import parse_request_data, create_paginate_response, create_message, LoggedValidationError
+from app_base.views import (
+    BasePaginator,
+    parse_request_data,
+    create_paginate_response,
+    create_message,
+    LoggedValidationError,
+)
 from app_telegram.documents import RoomDocument, MessageDocument
 from app_telegram.serializers import MessageAISearchSerializer, RoomDocumentSerializer, MessageDocumentSerializer
 from app_metadata.serializers import EmbeddingDocumentSerializer
@@ -52,20 +58,43 @@ class CustomMultiMatchSearchFilter(MultiMatchSearchFilterBackend):
 
 
 class CustomMatchPhraseSearchFilter(BaseSearchFilterBackend):
-    """Match phrase search filter backend. To search for exact phrases (group of
-     words in specific order)
+    """Search one or more exact phrases with AND/OR semantics.
 
     https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-match-query-phrase.html
 
-    `django_elasticsearch_dsl_drf` library includes the `query_backends` but not 
-    the `filter_backends`.
+    Repeated ``qem`` query parameters are combined into a Boolean query.
     """
 
     search_param = 'qem' # 'Query exact match'
+    operator_param = 'qem_operator'
 
-    query_backends = [
-        MatchPhraseQueryBackend,
-    ]
+    def filter_queryset(self, request, queryset, view):
+        phrases = [
+            value.strip()
+            for value in request.query_params.getlist(self.search_param)
+            if value.strip()
+        ]
+        if not phrases:
+            return queryset
+
+        operator = request.query_params.get(self.operator_param, 'or').strip().lower()
+        if operator not in {'and', 'or'}:
+            raise ValidationError({
+                self.operator_param: "Use 'and' or 'or'.",
+            })
+
+        phrase_queries = [Q('match_phrase', text=phrase) for phrase in phrases]
+        if len(phrase_queries) == 1:
+            return queryset.query(phrase_queries[0])
+        if operator == 'and':
+            combined_query = Q('bool', must=phrase_queries)
+        else:
+            combined_query = Q(
+                'bool',
+                should=phrase_queries,
+                minimum_should_match=1,
+            )
+        return queryset.query(combined_query)
 
 
 class ESPaginator(PageNumberPagination):
@@ -246,7 +275,21 @@ class RoomSearchView(DocumentViewSet):
     tags=['Search endpoints'],
     parameters=[
         OpenApiParameter(name='q', description='Free text search in `text` and `room_about` fields.', type=str),
-        OpenApiParameter(name='qem', description='Exact phrase search in the `text` field.', type=str),
+        OpenApiParameter(
+            name='qem',
+            description='Exact phrase in `text`; repeat this parameter to search multiple phrases.',
+            type=str,
+            many=True,
+            style='form',
+            explode=True,
+        ),
+        OpenApiParameter(
+            name='qem_operator',
+            description='Combines repeated `qem` phrases. Defaults to `or`.',
+            type=str,
+            enum=['or', 'and'],
+            default='or',
+        ),
         
         # Room Name Filters (Optimized replacement for room link)
         OpenApiParameter(name='room_name', description='Filter by exact room unique name (e.g., `name`).', type=str),
@@ -382,7 +425,23 @@ class MessageSearchView(DocumentViewSet):
         }
     }
 
+
+def build_message_search_queryset(request):
+    """Apply the configured Elasticsearch search backends without dispatching a view."""
+    view = MessageSearchView()
+    view.request = request
+    view.args = ()
+    view.kwargs = {}
+    view.format_kwarg = None
+    # django-elasticsearch-dsl-drf's paginator checks this ViewSet attribute,
+    # which is normally initialized by DRF's router dispatch.
+    view.action = "list"
+    request.parser_context.update({"view": view, "args": (), "kwargs": {}})
+    queryset = view.filter_queryset(view.get_queryset())
+    return view, queryset
+
 class MessagesEmbedSearchView(viewsets.ViewSet):
+    pagination_class = BasePaginator
     @extend_schema(
         parameters=[MessageAISearchSerializer],
         tags=['Search endpoints'],

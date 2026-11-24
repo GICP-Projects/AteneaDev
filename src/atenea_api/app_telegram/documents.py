@@ -17,6 +17,7 @@ class RoomDocument(Document):
     
     To allow auto-completion field: https://www.elastic.co/guide/en/elasticsearch/reference/current/search-suggesters.html#completion-suggester
     """
+    username_history = fields.ObjectField(enabled=False)
     title = fields.TextField(
         attr='title',
         fields={
@@ -122,6 +123,7 @@ class MessageDocument(Document):
 
     #annotated_text = AnnotatedTextField(attr='annotated_text') Ignore annotations for the moment
     msg_id = fields.LongField()
+    room_id = fields.KeywordField()
     text = fields.TextField(attr='annotated_text')
     lang = fields.KeywordField(normalizer=lc_normalizer)
     media_type = fields.KeywordField(normalizer=lc_normalizer)
@@ -242,8 +244,9 @@ class MessageDocument(Document):
             'entities',  # This is the related name from MessageItem to AnnotatedEntity
             queryset=(
                 AnnotatedEntity.objects.filter(content_type=messageitem_content_type)
-                .prefetch_related('entity')
-                .distinct("entity__pk")
+                .select_related('entity')
+                .order_by("object_id", "entity_id")
+                .distinct("object_id", "entity_id")
             ),  # This joins AnnotatedEntity to EntityItem
             to_attr='prefetch_entities'  
         )
